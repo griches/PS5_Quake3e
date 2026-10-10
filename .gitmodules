@@ -1,0 +1,6 @@
+[submodule "vendor/Quake3e"]
+	path = vendor/Quake3e
+	url = https://github.com/ec-/Quake3e.git
+[submodule "vendor/ioq3"]
+	path = vendor/ioq3
+	url = https://github.com/ioquake/ioq3.git

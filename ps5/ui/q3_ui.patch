@@ -1,0 +1,598 @@
+--- a/code/q3_ui/ui_controls2.c
++++ b/code/q3_ui/ui_controls2.c
+@@ -122,6 +122,8 @@
+ #define ID_JOYENABLE	40
+ #define ID_JOYTHRESHOLD	41
+ #define ID_SMOOTHMOUSE	42
++#define ID_LOOKSPEEDX	43	// PS5
++#define ID_LOOKSPEEDY	44	// PS5
+ 
+ #define ANIM_IDLE		0
+ #define ANIM_RUN		1
+@@ -195,6 +197,8 @@
+ 	menuaction_s		gesture;
+ 	menuradiobutton_s	invertmouse;
+ 	menuslider_s		sensitivity;
++	menuslider_s		lookspeedx;	// PS5: m_yaw, in tenths of its default
++	menuslider_s		lookspeedy;	// PS5: m_pitch, likewise
+ 	menuradiobutton_s	smoothmouse;
+ 	menuradiobutton_s	alwaysrun;
+ 	menuaction_s		showscores;
+@@ -224,46 +228,113 @@
+ } controls_t; 	
+ 
+ static controls_t s_controls;
++
++/*
++PS5: the DualSense's buttons are the engine's gamepad keys (ps5/q3/ps5_input.c).
++The numbers are Quake3e's (vendor/Quake3e/code/client/keycodes.h, K_PAD0_*):
++ioquake3's keycodes.h, which this module is compiled with, numbers them otherwise.
++*/
++#define PS5_KEY_FIRST			244
++#define PS5_KEY_LAST			275
++#define PS5_CROSS				244	// K_PAD0_A
++#define PS5_CIRCLE				245	// K_PAD0_B
++#define PS5_SQUARE				246	// K_PAD0_X
++#define PS5_TRIANGLE			247	// K_PAD0_Y
++#define PS5_TOUCHPAD			248	// K_PAD0_BACK
++#define PS5_L3					251	// K_PAD0_LEFTSTICK_CLICK
++#define PS5_R3					252	// K_PAD0_RIGHTSTICK_CLICK
++#define PS5_L1					253	// K_PAD0_LEFTSHOULDER
++#define PS5_R1					254	// K_PAD0_RIGHTSHOULDER
++#define PS5_DPAD_UP				255
++#define PS5_DPAD_DOWN			256
++#define PS5_DPAD_LEFT			257
++#define PS5_DPAD_RIGHT			258
++#define PS5_LSTICK_LEFT			259
++#define PS5_LSTICK_RIGHT		260
++#define PS5_L2					267	// K_PAD0_LEFTTRIGGER
++#define PS5_R2					268	// K_PAD0_RIGHTTRIGGER
++// Look sensitivity is two sliders, horizontal and vertical: m_yaw and m_pitch.
++// The engine multiplies both by "sensitivity", which this menu holds at
++// PS5_SENSITIVITY so that the sliders alone say how fast the stick turns. A slider
++// steps by one: a step is a tenth of the engine's 0.022, so 10 is the default
++// (with PS5_SENSITIVITY, the feel settled on at the console) and 30 three times it.
++#define PS5_SENSITIVITY			4.45f
++#define PS5_M_STEP				0.0022f
++#define PS5_M_DEFAULT_STEPS		10
++#define PS5_M_MAX_STEPS			30
++
++// A key's name as the menu shows it: the console's own name for a pad key
++static void Controls_KeyName( int key, char *name, int size )
++{
++	static const struct { const char *engine; const char *shown; } names[] = {
++		{ "PAD0_A", "CROSS" }, { "PAD0_B", "CIRCLE" }, { "PAD0_X", "SQUARE" }, { "PAD0_Y", "TRIANGLE" },
++		{ "PAD0_BACK", "TOUCH PAD" }, { "PAD0_START", "OPTIONS" },
++		{ "PAD0_LEFTSTICK_CLICK", "L3" }, { "PAD0_RIGHTSTICK_CLICK", "R3" },
++		{ "PAD0_LEFTSHOULDER", "L1" }, { "PAD0_RIGHTSHOULDER", "R1" },
++		{ "PAD0_LEFTTRIGGER", "L2" }, { "PAD0_RIGHTTRIGGER", "R2" },
++		{ "PAD0_DPAD_UP", "D-PAD UP" }, { "PAD0_DPAD_DOWN", "D-PAD DOWN" },
++		{ "PAD0_DPAD_LEFT", "D-PAD LEFT" }, { "PAD0_DPAD_RIGHT", "D-PAD RIGHT" },
++		{ "PAD0_LEFTSTICK_LEFT", "LEFT STICK LEFT" }, { "PAD0_LEFTSTICK_RIGHT", "LEFT STICK RIGHT" },
++		{ "PAD0_LEFTSTICK_UP", "LEFT STICK UP" }, { "PAD0_LEFTSTICK_DOWN", "LEFT STICK DOWN" },
++	};
++	int i;
++
++	trap_Key_KeynumToStringBuf( key, name, size );
++	Q_strupr( name );
++	for ( i = 0; i < ARRAY_LEN( names ); i++ ) {
++		if ( !strcmp( name, names[i].engine ) ) {
++			Q_strncpyz( name, names[i].shown, size );
++			return;
++		}
++	}
++}
+ 
++// The engine sends the pad's own keys, not the menus', while a binding waits for one
++static void Controls_SetWaiting( qboolean waiting )
++{
++	s_controls.waitingforkey = waiting;
++	trap_Cvar_Set( "ui_ps5WaitingForKey", waiting ? "1" : "0" );
++}
++
+ static vec4_t controls_binding_color  = {1.00f, 0.43f, 0.00f, 1.00f};
+ 
+ static bind_t g_bindings[] = 
+ {
+-	{"+scores",			"show scores",		ID_SHOWSCORES,	ANIM_IDLE,		K_TAB,			-1,		-1, -1},
+-	{"+button2",		"use item",			ID_USEITEM,		ANIM_IDLE,		K_ENTER,		-1,		-1, -1},
+-	{"+speed", 			"run / walk",		ID_SPEED,		ANIM_RUN,		K_SHIFT,		-1,		-1,	-1},
+-	{"+forward", 		"walk forward",		ID_FORWARD,		ANIM_WALK,		K_UPARROW,		-1,		-1, -1},
+-	{"+back", 			"backpedal",		ID_BACKPEDAL,	ANIM_BACK,		K_DOWNARROW,	-1,		-1, -1},
+-	{"+moveleft", 		"step left",		ID_MOVELEFT,	ANIM_STEPLEFT,	',',			-1,		-1, -1},
+-	{"+moveright", 		"step right",		ID_MOVERIGHT,	ANIM_STEPRIGHT,	'.',			-1,		-1, -1},
+-	{"+moveup",			"up / jump",		ID_MOVEUP,		ANIM_JUMP,		K_SPACE,		-1,		-1, -1},
+-	{"+movedown",		"down / crouch",	ID_MOVEDOWN,	ANIM_CROUCH,	'c',			-1,		-1, -1},
+-	{"+left", 			"turn left",		ID_LEFT,		ANIM_TURNLEFT,	K_LEFTARROW,	-1,		-1, -1},
+-	{"+right", 			"turn right",		ID_RIGHT,		ANIM_TURNRIGHT,	K_RIGHTARROW,	-1,		-1, -1},
+-	{"+strafe", 		"sidestep / turn",	ID_STRAFE,		ANIM_IDLE,		K_ALT,			-1,		-1, -1},
+-	{"+lookup", 		"look up",			ID_LOOKUP,		ANIM_LOOKUP,	K_PGDN,			-1,		-1, -1},
+-	{"+lookdown", 		"look down",		ID_LOOKDOWN,	ANIM_LOOKDOWN,	K_DEL,			-1,		-1, -1},
+-	{"+mlook", 			"mouse look",		ID_MOUSELOOK,	ANIM_IDLE,		'/',			-1,		-1, -1},
+-	{"centerview", 		"center view",		ID_CENTERVIEW,	ANIM_IDLE,		K_END,			-1,		-1, -1},
+-	{"+zoom", 			"zoom view",		ID_ZOOMVIEW,	ANIM_IDLE,		-1,				-1,		-1, -1},
+-	{"weapon 1",		"gauntlet",			ID_WEAPON1,		ANIM_WEAPON1,	'1',			-1,		-1, -1},
+-	{"weapon 2",		"machinegun",		ID_WEAPON2,		ANIM_WEAPON2,	'2',			-1,		-1, -1},
+-	{"weapon 3",		"shotgun",			ID_WEAPON3,		ANIM_WEAPON3,	'3',			-1,		-1, -1},
+-	{"weapon 4",		"grenade launcher",	ID_WEAPON4,		ANIM_WEAPON4,	'4',			-1,		-1, -1},
+-	{"weapon 5",		"rocket launcher",	ID_WEAPON5,		ANIM_WEAPON5,	'5',			-1,		-1, -1},
+-	{"weapon 6",		"lightning",		ID_WEAPON6,		ANIM_WEAPON6,	'6',			-1,		-1, -1},
+-	{"weapon 7",		"railgun",			ID_WEAPON7,		ANIM_WEAPON7,	'7',			-1,		-1, -1},
+-	{"weapon 8",		"plasma gun",		ID_WEAPON8,		ANIM_WEAPON8,	'8',			-1,		-1, -1},
+-	{"weapon 9",		"BFG",				ID_WEAPON9,		ANIM_WEAPON9,	'9',			-1,		-1, -1},
+-	{"+attack", 		"attack",			ID_ATTACK,		ANIM_ATTACK,	K_CTRL,			-1,		-1, -1},
+-	{"weapprev",		"prev weapon",		ID_WEAPPREV,	ANIM_IDLE,		'[',			-1,		-1, -1},
+-	{"weapnext", 		"next weapon",		ID_WEAPNEXT,	ANIM_IDLE,		']',			-1,		-1, -1},
+-	{"+button3", 		"gesture",			ID_GESTURE,		ANIM_GESTURE,	K_MOUSE3,		-1,		-1, -1},
+-	{"messagemode", 	"chat",				ID_CHAT,		ANIM_CHAT,		't',			-1,		-1, -1},
+-	{"messagemode2", 	"chat - team",		ID_CHAT2,		ANIM_CHAT,		-1,				-1,		-1, -1},
+-	{"messagemode3", 	"chat - target",	ID_CHAT3,		ANIM_CHAT,		-1,				-1,		-1, -1},
+-	{"messagemode4", 	"chat - attacker",	ID_CHAT4,		ANIM_CHAT,		-1,				-1,		-1, -1},
+-	{"togglemenu", 		"toggle menu",		ID_TOGGLEMENU,	ANIM_IDLE,		K_ESCAPE,		-1,		-1, -1},
++	{"+scores",			"show scores",		ID_SHOWSCORES,	ANIM_IDLE,		PS5_TOUCHPAD,	-1,		-1, -1},
++	{"+button2",		"use item",			ID_USEITEM,		ANIM_IDLE,		PS5_TRIANGLE,	-1,		-1, -1},
++	{"+speed", 			"run / walk",		ID_SPEED,		ANIM_RUN,		-1,	-1,		-1,	-1},
++	{"+forward", 		"walk forward",		ID_FORWARD,		ANIM_WALK,		PS5_DPAD_UP,	-1,		-1, -1},
++	{"+back", 			"backpedal",		ID_BACKPEDAL,	ANIM_BACK,		PS5_DPAD_DOWN,	-1,		-1, -1},
++	{"+moveleft", 		"step left",		ID_MOVELEFT,	ANIM_STEPLEFT,	PS5_LSTICK_LEFT,	-1,		-1, -1},
++	{"+moveright", 		"step right",		ID_MOVERIGHT,	ANIM_STEPRIGHT,	PS5_LSTICK_RIGHT,	-1,		-1, -1},
++	{"+moveup",			"up / jump",		ID_MOVEUP,		ANIM_JUMP,		PS5_CROSS,	PS5_L3,		-1, -1},
++	{"+movedown",		"down / crouch",	ID_MOVEDOWN,	ANIM_CROUCH,	PS5_CIRCLE,	PS5_R3,		-1, -1},
++	{"+left", 			"turn left",		ID_LEFT,		ANIM_TURNLEFT,	PS5_DPAD_LEFT,	-1,		-1, -1},
++	{"+right", 			"turn right",		ID_RIGHT,		ANIM_TURNRIGHT,	PS5_DPAD_RIGHT,	-1,		-1, -1},
++	{"+strafe", 		"sidestep / turn",	ID_STRAFE,		ANIM_IDLE,		-1,	-1,		-1, -1},
++	{"+lookup", 		"look up",			ID_LOOKUP,		ANIM_LOOKUP,	-1,	-1,		-1, -1},
++	{"+lookdown", 		"look down",		ID_LOOKDOWN,	ANIM_LOOKDOWN,	-1,	-1,		-1, -1},
++	{"+mlook", 			"stick look",		ID_MOUSELOOK,	ANIM_IDLE,		-1,	-1,		-1, -1},
++	{"centerview", 		"center view",		ID_CENTERVIEW,	ANIM_IDLE,		-1,	-1,		-1, -1},
++	{"+zoom", 			"zoom view",		ID_ZOOMVIEW,	ANIM_IDLE,		PS5_L2,	-1,		-1, -1},
++	{"weapon 1",		"gauntlet",			ID_WEAPON1,		ANIM_WEAPON1,	-1,	-1,		-1, -1},
++	{"weapon 2",		"machinegun",		ID_WEAPON2,		ANIM_WEAPON2,	-1,	-1,		-1, -1},
++	{"weapon 3",		"shotgun",			ID_WEAPON3,		ANIM_WEAPON3,	-1,	-1,		-1, -1},
++	{"weapon 4",		"grenade launcher",	ID_WEAPON4,		ANIM_WEAPON4,	-1,	-1,		-1, -1},
++	{"weapon 5",		"rocket launcher",	ID_WEAPON5,		ANIM_WEAPON5,	-1,	-1,		-1, -1},
++	{"weapon 6",		"lightning",		ID_WEAPON6,		ANIM_WEAPON6,	-1,	-1,		-1, -1},
++	{"weapon 7",		"railgun",			ID_WEAPON7,		ANIM_WEAPON7,	-1,	-1,		-1, -1},
++	{"weapon 8",		"plasma gun",		ID_WEAPON8,		ANIM_WEAPON8,	-1,	-1,		-1, -1},
++	{"weapon 9",		"BFG",				ID_WEAPON9,		ANIM_WEAPON9,	-1,	-1,		-1, -1},
++	{"+attack", 		"attack",			ID_ATTACK,		ANIM_ATTACK,	PS5_R2,	PS5_SQUARE,		-1, -1},
++	{"weapprev",		"prev weapon",		ID_WEAPPREV,	ANIM_IDLE,		PS5_L1,	-1,		-1, -1},
++	{"weapnext", 		"next weapon",		ID_WEAPNEXT,	ANIM_IDLE,		PS5_R1,	-1,		-1, -1},
++	{"+button3", 		"gesture",			ID_GESTURE,		ANIM_GESTURE,	-1,	-1,		-1, -1},
++	{"messagemode", 	"chat",				ID_CHAT,		ANIM_CHAT,		-1,	-1,		-1, -1},
++	{"messagemode2", 	"chat - team",		ID_CHAT2,		ANIM_CHAT,		-1,	-1,		-1, -1},
++	{"messagemode3", 	"chat - target",	ID_CHAT3,		ANIM_CHAT,		-1,	-1,		-1, -1},
++	{"messagemode4", 	"chat - attacker",	ID_CHAT4,		ANIM_CHAT,		-1,	-1,		-1, -1},
++	{"togglemenu", 		"toggle menu",		ID_TOGGLEMENU,	ANIM_IDLE,		-1,	-1,		-1, -1},
+ 	{(char*)NULL,		(char*)NULL,		0,				0,				-1,				-1,		-1,	-1},
+ };
+ 
+@@ -273,8 +344,7 @@
+ 	{"m_pitch",			0,					0},
+ 	{"cg_autoswitch",	0,					0},
+ 	{"sensitivity",		0,					0},
+-	{"in_joystick",		0,					0},
+-	{"joy_threshold",	0,					0},
++	{"m_yaw",			0,					0},
+ 	{"m_filter",		0,					0},
+ 	{"cl_freelook",		0,					0},
+ 	{NULL,				0,					0}
+@@ -314,7 +384,8 @@
+ };
+ 
+ static menucommon_s *g_looking_controls[] = {
+-	(menucommon_s *)&s_controls.sensitivity,
++	(menucommon_s *)&s_controls.lookspeedx,
++	(menucommon_s *)&s_controls.lookspeedy,
+ 	(menucommon_s *)&s_controls.smoothmouse,
+ 	(menucommon_s *)&s_controls.invertmouse,
+ 	(menucommon_s *)&s_controls.lookup,
+@@ -323,8 +394,6 @@
+ 	(menucommon_s *)&s_controls.freelook,
+ 	(menucommon_s *)&s_controls.centerview,
+ 	(menucommon_s *)&s_controls.zoomview,
+-	(menucommon_s *)&s_controls.joyenable,
+-	(menucommon_s *)&s_controls.joythreshold,
+ 	NULL,
+ };
+ 
+@@ -336,7 +405,6 @@
+ 	(menucommon_s *)&s_controls.chat2,
+ 	(menucommon_s *)&s_controls.chat3,
+ 	(menucommon_s *)&s_controls.chat4,
+-	(menucommon_s *)&s_controls.togglemenu,
+ 	NULL,
+ };
+ 
+@@ -666,17 +734,15 @@
+ 
+ 	b1 = g_bindings[a->generic.id].bind1;
+ 	if (b1 == -1)
+-		strcpy(name,"???");
++		strcpy(name,"NOT SET");
+ 	else
+ 	{
+-		trap_Key_KeynumToStringBuf( b1, name, 32 );
+-		Q_strupr(name);
++		Controls_KeyName( b1, name, 32 );
+ 
+ 		b2 = g_bindings[a->generic.id].bind2;
+ 		if (b2 != -1)
+ 		{
+-			trap_Key_KeynumToStringBuf( b2, name2, 32 );
+-			Q_strupr(name2);
++			Controls_KeyName( b2, name2, 32 );
+ 
+ 			strcat( name, " or " );
+ 			strcat( name, name2 );
+@@ -693,13 +759,13 @@
+ 		if (s_controls.waitingforkey)
+ 		{
+ 			UI_DrawChar( x, y, '=', UI_CENTER|UI_BLINK|UI_SMALLFONT, text_color_highlight);
+-			UI_DrawString(SCREEN_WIDTH * 0.50, SCREEN_HEIGHT * 0.80, "Waiting for new key ... ESCAPE to cancel", UI_SMALLFONT|UI_CENTER|UI_PULSE, colorWhite );
++			UI_DrawString(SCREEN_WIDTH * 0.50, SCREEN_HEIGHT * 0.80, "Press a button ... OPTIONS to cancel", UI_SMALLFONT|UI_CENTER|UI_PULSE, colorWhite );
+ 		}
+ 		else
+ 		{
+ 			UI_DrawChar( x, y, 13, UI_CENTER|UI_BLINK|UI_SMALLFONT, text_color_highlight);
+-			UI_DrawString(SCREEN_WIDTH * 0.50, SCREEN_HEIGHT * 0.78, "Press ENTER or CLICK to change", UI_SMALLFONT|UI_CENTER, colorWhite );
+-			UI_DrawString(SCREEN_WIDTH * 0.50, SCREEN_HEIGHT * 0.82, "Press BACKSPACE to clear", UI_SMALLFONT|UI_CENTER, colorWhite );
++			UI_DrawString(SCREEN_WIDTH * 0.50, SCREEN_HEIGHT * 0.78, "CROSS to change", UI_SMALLFONT|UI_CENTER, colorWhite );
++			UI_DrawString(SCREEN_WIDTH * 0.50, SCREEN_HEIGHT * 0.82, "SQUARE to clear", UI_SMALLFONT|UI_CENTER, colorWhite );
+ 		}
+ 	}
+ 	else
+@@ -724,7 +790,7 @@
+ */
+ static void Controls_StatusBar( void *self )
+ {
+-	UI_DrawString(SCREEN_WIDTH * 0.50, SCREEN_HEIGHT * 0.80, "Use Arrow Keys or CLICK to change", UI_SMALLFONT|UI_CENTER, colorWhite );
++	UI_DrawString(SCREEN_WIDTH * 0.50, SCREEN_HEIGHT * 0.80, "D-PAD LEFT and RIGHT, or CROSS, to change", UI_SMALLFONT|UI_CENTER, colorWhite );
+ }
+ 
+ 
+@@ -763,14 +829,17 @@
+ 	twokeys[0] = twokeys[1] = -1;
+ 	count = 0;
+ 
+-	for ( j = 0; j < 256; j++ )
++	// PS5: only the pad's keys. default.cfg binds a keyboard the console does not
++	// have; those binds are left alone and never shown.
++	for ( j = PS5_KEY_FIRST; j <= PS5_KEY_LAST; j++ )
+ 	{
+-		trap_Key_GetBindingBuf( j, b, 256 );
++		int key = j;
++		trap_Key_GetBindingBuf( key, b, 256 );
+ 		if ( *b == 0 ) {
+ 			continue;
+ 		}
+ 		if ( !Q_stricmp( b, command ) ) {
+-			twokeys[count] = j;
++			twokeys[count] = key;
+ 			count++;
+ 			if (count == 2)
+ 				break;
+@@ -807,9 +876,8 @@
+ 	s_controls.smoothmouse.curvalue  = UI_ClampCvar( 0, 1, Controls_GetCvarValue( "m_filter" ) );
+ 	s_controls.alwaysrun.curvalue    = UI_ClampCvar( 0, 1, Controls_GetCvarValue( "cl_run" ) );
+ 	s_controls.autoswitch.curvalue   = UI_ClampCvar( 0, 1, Controls_GetCvarValue( "cg_autoswitch" ) );
+-	s_controls.sensitivity.curvalue  = UI_ClampCvar( 2, 30, Controls_GetCvarValue( "sensitivity" ) );
+-	s_controls.joyenable.curvalue    = UI_ClampCvar( 0, 1, Controls_GetCvarValue( "in_joystick" ) );
+-	s_controls.joythreshold.curvalue = UI_ClampCvar( 0.05f, 0.75f, Controls_GetCvarValue( "joy_threshold" ) );
++	s_controls.lookspeedx.curvalue   = UI_ClampCvar( 1, PS5_M_MAX_STEPS, (int)( fabs( Controls_GetCvarValue( "m_yaw" ) ) * Controls_GetCvarValue( "sensitivity" ) / ( PS5_M_STEP * PS5_SENSITIVITY ) + 0.5f ) );
++	s_controls.lookspeedy.curvalue   = UI_ClampCvar( 1, PS5_M_MAX_STEPS, (int)( fabs( Controls_GetCvarValue( "m_pitch" ) ) * Controls_GetCvarValue( "sensitivity" ) / ( PS5_M_STEP * PS5_SENSITIVITY ) + 0.5f ) );
+ 	s_controls.freelook.curvalue     = UI_ClampCvar( 0, 1, Controls_GetCvarValue( "cl_freelook" ) );
+ }
+ 
+@@ -840,17 +908,17 @@
+ 		}
+ 	}
+ 
++	// PS5: the two look speeds are m_yaw and m_pitch; the sign of m_pitch is the inversion
++	trap_Cvar_SetValue( "m_yaw", s_controls.lookspeedx.curvalue * PS5_M_STEP );
+ 	if ( s_controls.invertmouse.curvalue )
+-		trap_Cvar_SetValue( "m_pitch", -fabs( trap_Cvar_VariableValue( "m_pitch" ) ) );
++		trap_Cvar_SetValue( "m_pitch", -s_controls.lookspeedy.curvalue * PS5_M_STEP );
+ 	else
+-		trap_Cvar_SetValue( "m_pitch", fabs( trap_Cvar_VariableValue( "m_pitch" ) ) );
++		trap_Cvar_SetValue( "m_pitch", s_controls.lookspeedy.curvalue * PS5_M_STEP );
+ 
+ 	trap_Cvar_SetValue( "m_filter", s_controls.smoothmouse.curvalue );
+ 	trap_Cvar_SetValue( "cl_run", s_controls.alwaysrun.curvalue );
+ 	trap_Cvar_SetValue( "cg_autoswitch", s_controls.autoswitch.curvalue );
+-	trap_Cvar_SetValue( "sensitivity", s_controls.sensitivity.curvalue );
+-	trap_Cvar_SetValue( "in_joystick", s_controls.joyenable.curvalue );
+-	trap_Cvar_SetValue( "joy_threshold", s_controls.joythreshold.curvalue );
++	trap_Cvar_SetValue( "sensitivity", PS5_SENSITIVITY );
+ 	trap_Cvar_SetValue( "cl_freelook", s_controls.freelook.curvalue );
+ 	trap_Cmd_ExecuteText( EXEC_APPEND, "in_restart\n" );
+ }
+@@ -881,9 +949,8 @@
+ 	s_controls.smoothmouse.curvalue  = Controls_GetCvarDefault( "m_filter" );
+ 	s_controls.alwaysrun.curvalue    = Controls_GetCvarDefault( "cl_run" );
+ 	s_controls.autoswitch.curvalue   = Controls_GetCvarDefault( "cg_autoswitch" );
+-	s_controls.sensitivity.curvalue  = Controls_GetCvarDefault( "sensitivity" );
+-	s_controls.joyenable.curvalue    = Controls_GetCvarDefault( "in_joystick" );
+-	s_controls.joythreshold.curvalue = Controls_GetCvarDefault( "joy_threshold" );
++	s_controls.lookspeedx.curvalue   = PS5_M_DEFAULT_STEPS;
++	s_controls.lookspeedy.curvalue   = PS5_M_DEFAULT_STEPS;
+ 	s_controls.freelook.curvalue     = Controls_GetCvarDefault( "cl_freelook" );
+ }
+ 
+@@ -927,7 +994,7 @@
+ 		switch (key)
+ 		{
+ 			case K_ESCAPE:
+-				s_controls.waitingforkey = qfalse;
++				Controls_SetWaiting( qfalse );
+ 				Controls_Update();
+ 				return (menu_out_sound);
+ 	
+@@ -997,7 +1064,7 @@
+ 		}
+ 	}				
+ 		
+-	s_controls.waitingforkey = qfalse;
++	Controls_SetWaiting( qfalse );
+ 
+ 	if (found)
+ 	{	
+@@ -1112,8 +1179,8 @@
+ 		case ID_SMOOTHMOUSE:
+ 		case ID_ALWAYSRUN:
+ 		case ID_AUTOSWITCH:
+-		case ID_JOYENABLE:
+-		case ID_JOYTHRESHOLD:
++		case ID_LOOKSPEEDX:
++		case ID_LOOKSPEEDY:
+ 			if (event == QM_ACTIVATED)
+ 			{
+ 				s_controls.changesmade = qtrue;
+@@ -1139,7 +1206,7 @@
+ 	}
+ 	else if ((event == QM_ACTIVATED) && !s_controls.waitingforkey)
+ 	{
+-		s_controls.waitingforkey = 1;
++		Controls_SetWaiting( qtrue );
+ 		Controls_Update();
+ 	}
+ }
+@@ -1460,7 +1527,7 @@
+ 	s_controls.invertmouse.generic.type      = MTYPE_RADIOBUTTON;
+ 	s_controls.invertmouse.generic.flags	 = QMF_SMALLFONT;
+ 	s_controls.invertmouse.generic.x	     = SCREEN_WIDTH/2;
+-	s_controls.invertmouse.generic.name	     = "invert mouse";
++	s_controls.invertmouse.generic.name	     = "invert look";
+ 	s_controls.invertmouse.generic.id        = ID_INVERTMOUSE;
+ 	s_controls.invertmouse.generic.callback  = Controls_MenuEvent;
+ 	s_controls.invertmouse.generic.statusbar = Controls_StatusBar;
+@@ -1468,7 +1535,7 @@
+ 	s_controls.smoothmouse.generic.type      = MTYPE_RADIOBUTTON;
+ 	s_controls.smoothmouse.generic.flags	 = QMF_SMALLFONT;
+ 	s_controls.smoothmouse.generic.x	     = SCREEN_WIDTH/2;
+-	s_controls.smoothmouse.generic.name	     = "smooth mouse";
++	s_controls.smoothmouse.generic.name	     = "smooth look";
+ 	s_controls.smoothmouse.generic.id        = ID_SMOOTHMOUSE;
+ 	s_controls.smoothmouse.generic.callback  = Controls_MenuEvent;
+ 	s_controls.smoothmouse.generic.statusbar = Controls_StatusBar;
+@@ -1492,13 +1559,33 @@
+ 	s_controls.sensitivity.generic.type	     = MTYPE_SLIDER;
+ 	s_controls.sensitivity.generic.x		 = SCREEN_WIDTH/2;
+ 	s_controls.sensitivity.generic.flags	 = QMF_SMALLFONT;
+-	s_controls.sensitivity.generic.name	     = "mouse speed";
++	s_controls.sensitivity.generic.name	     = "look sensitivity";
+ 	s_controls.sensitivity.generic.id 	     = ID_MOUSESPEED;
+ 	s_controls.sensitivity.generic.callback  = Controls_MenuEvent;
+ 	s_controls.sensitivity.minvalue		     = 2;
+ 	s_controls.sensitivity.maxvalue		     = 30;
+ 	s_controls.sensitivity.generic.statusbar = Controls_StatusBar;
+ 
++	s_controls.lookspeedx.generic.type	     = MTYPE_SLIDER;
++	s_controls.lookspeedx.generic.x		     = SCREEN_WIDTH/2;
++	s_controls.lookspeedx.generic.flags	     = QMF_SMALLFONT;
++	s_controls.lookspeedx.generic.name	     = "horizontal sensitivity";
++	s_controls.lookspeedx.generic.id 	     = ID_LOOKSPEEDX;
++	s_controls.lookspeedx.generic.callback   = Controls_MenuEvent;
++	s_controls.lookspeedx.minvalue		     = 1;
++	s_controls.lookspeedx.maxvalue		     = PS5_M_MAX_STEPS;
++	s_controls.lookspeedx.generic.statusbar  = Controls_StatusBar;
++
++	s_controls.lookspeedy.generic.type	     = MTYPE_SLIDER;
++	s_controls.lookspeedy.generic.x		     = SCREEN_WIDTH/2;
++	s_controls.lookspeedy.generic.flags	     = QMF_SMALLFONT;
++	s_controls.lookspeedy.generic.name	     = "vertical sensitivity";
++	s_controls.lookspeedy.generic.id 	     = ID_LOOKSPEEDY;
++	s_controls.lookspeedy.generic.callback   = Controls_MenuEvent;
++	s_controls.lookspeedy.minvalue		     = 1;
++	s_controls.lookspeedy.maxvalue		     = PS5_M_MAX_STEPS;
++	s_controls.lookspeedy.generic.statusbar  = Controls_StatusBar;
++
+ 	s_controls.gesture.generic.type	     = MTYPE_ACTION;
+ 	s_controls.gesture.generic.flags     = QMF_LEFT_JUSTIFY|QMF_PULSEIFFOCUS|QMF_GRAYED|QMF_HIDDEN;
+ 	s_controls.gesture.generic.callback  = Controls_ActionEvent;
+@@ -1572,7 +1659,8 @@
+ 	Menu_AddItem( &s_controls.menu, &s_controls.weapons );
+ 	Menu_AddItem( &s_controls.menu, &s_controls.misc );
+ 
+-	Menu_AddItem( &s_controls.menu, &s_controls.sensitivity );
++	Menu_AddItem( &s_controls.menu, &s_controls.lookspeedx );
++	Menu_AddItem( &s_controls.menu, &s_controls.lookspeedy );
+ 	Menu_AddItem( &s_controls.menu, &s_controls.smoothmouse );
+ 	Menu_AddItem( &s_controls.menu, &s_controls.invertmouse );
+ 	Menu_AddItem( &s_controls.menu, &s_controls.lookup );
+@@ -1581,8 +1669,6 @@
+ 	Menu_AddItem( &s_controls.menu, &s_controls.freelook );
+ 	Menu_AddItem( &s_controls.menu, &s_controls.centerview );
+ 	Menu_AddItem( &s_controls.menu, &s_controls.zoomview );
+-	Menu_AddItem( &s_controls.menu, &s_controls.joyenable );
+-	Menu_AddItem( &s_controls.menu, &s_controls.joythreshold );
+ 
+ 	Menu_AddItem( &s_controls.menu, &s_controls.alwaysrun );
+ 	Menu_AddItem( &s_controls.menu, &s_controls.run );
+@@ -1617,7 +1703,6 @@
+ 	Menu_AddItem( &s_controls.menu, &s_controls.chat2 );
+ 	Menu_AddItem( &s_controls.menu, &s_controls.chat3 );
+ 	Menu_AddItem( &s_controls.menu, &s_controls.chat4 );
+-	Menu_AddItem( &s_controls.menu, &s_controls.togglemenu );
+ 
+ 	Menu_AddItem( &s_controls.menu, &s_controls.back );
+ 
+--- a/code/q3_ui/ui_credits.c
++++ b/code/q3_ui/ui_credits.c
+@@ -49,38 +49,37 @@
+ 	int		y;
+ 	int		i;
+ 
+-	// These are all people that have made commits to Subversion, and thus
+-	//  probably incomplete.
+-	// (These are in alphabetical order, for the defense of everyone's egos.)
+-	static const char *names[] = {
+-		"Tim Angus",
+-		"James Canete",
+-		"Vincent Cojot",
+-		"Ryan C. Gordon",
+-		"Aaron Gyes",
+-		"Zack Middleton",
+-		"Ludwig Nussel",
+-		"Julian Priestley",
+-		"Scirocco Six",
+-		"Thilo Schulz",
+-		"Zachary J. Slater",
+-		"Tony J. White",
+-		"...and many, many others!",  // keep this one last.
++	// PS5: what this build is made of (the function keeps ioquake3's name; it is
++	// the second credits page, after id Software's)
++	static const char *lines[] = {
++		"Engine",
++		"Quake3e and its contributors",
++		"",
++		"Menus",
++		"ioquake3 and its contributors",
++		"",
++		"Vulkan on the console",
++		"RADV (Mesa) and the PS5 Vulkan stack by Mihawk",
++		"",
++		"PlayStation 5 port",
++		"Gary Riches",
+ 		NULL
+ 	};
+ 
+ 	// Center text vertically on the screen
+-	y = (SCREEN_HEIGHT - ARRAY_LEN(names) * (1.42 * PROP_HEIGHT * PROP_SMALL_SIZE_SCALE)) / 2;
++	y = (SCREEN_HEIGHT - ARRAY_LEN(lines) * (1.42 * PROP_HEIGHT * PROP_SMALL_SIZE_SCALE)) / 2;
+ 
+-	UI_DrawProportionalString( 320, y, "ioquake3 contributors:", UI_CENTER|UI_SMALLFONT, color_white );
+-	y += 1.42 * PROP_HEIGHT * PROP_SMALL_SIZE_SCALE;
++	UI_DrawProportionalString( 320, y, "Quake III Arena on PlayStation 5", UI_CENTER|UI_SMALLFONT, color_white );
++	y += 2 * 1.42 * PROP_HEIGHT * PROP_SMALL_SIZE_SCALE;
+ 
+-	for (i = 0; names[i]; i++) {
+-		UI_DrawProportionalString( 320, y, names[i], UI_CENTER|UI_SMALLFONT, color_white );
+-		y += 1.42 * PROP_HEIGHT * PROP_SMALL_SIZE_SCALE;
++	for (i = 0; lines[i]; i++) {
++		// a heading, then who: headings are every third line
++		UI_DrawProportionalString( 320, y, lines[i], UI_CENTER|UI_SMALLFONT, ( i % 3 ) == 0 ? color_red : color_white );
++		y += ( lines[i][0] ? 1.42 : 0.5 ) * PROP_HEIGHT * PROP_SMALL_SIZE_SCALE;
+ 	}
+ 
+-	UI_DrawString( 320, 459, "https://www.ioquake3.org/", UI_CENTER|UI_SMALLFONT, color_red );
++	UI_DrawString( 320, 443, "A homebrew port, under the GNU General Public License.", UI_CENTER|UI_SMALLFONT, color_red );
++	UI_DrawString( 320, 459, "Not affiliated with id Software or Sony Interactive Entertainment.", UI_CENTER|UI_SMALLFONT, color_red );
+ }
+ 
+ 
+--- a/code/q3_ui/ui_menu.c
++++ b/code/q3_ui/ui_menu.c
+@@ -273,7 +273,9 @@
+ 
+ 	trap_Cvar_Set( "sv_killserver", "1" );
+ 
+-	if( !uis.demoversion && !ui_cdkeychecked.integer ) {
++	// PS5: no CD key prompt at start-up (it only opened the on-screen keyboard, and
++	// Accept dismissed it); the key can still be entered under Setup, CD Key
++	if( 0 && !uis.demoversion && !ui_cdkeychecked.integer ) {
+ 		char	key[17];
+ 
+ 		trap_GetCDKey( key, sizeof(key) );
+--- a/code/q3_ui/ui_mfield.c
++++ b/code/q3_ui/ui_mfield.c
+@@ -379,6 +379,10 @@
+ 	}
+ 
+ 	MField_Draw( &f->field, x + w, y, style, color );
++
++	// PS5: say how to type into the field in focus
++	if ( focus )
++		UI_DrawString( 320, 452, "CROSS: ON-SCREEN KEYBOARD", UI_CENTER|UI_SMALLFONT, color_white );
+ }
+ 
+ /*
+@@ -396,6 +400,12 @@
+ 	{
+ 		case K_KP_ENTER:
+ 		case K_ENTER:
++		case K_MOUSE1:
++			// PS5: a pad cannot type; CROSS or a click on a field opens the console's
++			// on-screen keyboard (the engine's ps5_keyboard, ps5/q3/ps5_input.c)
++			trap_Cmd_ExecuteText( EXEC_APPEND, "ps5_keyboard\n" );
++			break;
++
+ 		case K_JOY1:
+ 		case K_JOY2:
+ 		case K_JOY3:
+--- a/code/q3_ui/ui_video.c
++++ b/code/q3_ui/ui_video.c
+@@ -248,6 +248,7 @@
+ #define ID_SOUND		108
+ #define ID_NETWORK		109
+ #define ID_RATIO		110
++#define ID_SHOWFPS		111	// PS5
+ 
+ typedef struct {
+ 	menuframework_s	menu;
+@@ -273,6 +274,7 @@
+ 	menulist_s  	colordepth;
+ 	menulist_s  	geometry;
+ 	menulist_s  	filter;
++	menuradiobutton_s	showfps;	// PS5: cg_drawFPS, applied at once
+ 	menutext_s		driverinfo;
+ 
+ 	menubitmap_s	apply;
+@@ -789,6 +791,11 @@
+ 		s_graphicsoptions.fs.curvalue          = ivo->fullscreen;
+ 		break;
+ 
++	case ID_SHOWFPS:
++		// PS5: no key to type cg_drawFPS with; takes effect at once, no restart
++		trap_Cvar_SetValue( "cg_drawFPS", s_graphicsoptions.showfps.curvalue );
++		break;
++
+ 	case ID_DRIVERINFO:
+ 		UI_DriverInfo_Menu();
+ 		break;
+@@ -1217,6 +1224,17 @@
+ 	s_graphicsoptions.filter.generic.x	    = 400;
+ 	s_graphicsoptions.filter.generic.y	    = y;
+ 	s_graphicsoptions.filter.itemnames      = filter_names;
++	y += BIGCHAR_HEIGHT+2;
++
++	// PS5: references/modifies "cg_drawFPS"
++	s_graphicsoptions.showfps.generic.type     = MTYPE_RADIOBUTTON;
++	s_graphicsoptions.showfps.generic.name     = "Show FPS:";
++	s_graphicsoptions.showfps.generic.flags    = QMF_PULSEIFFOCUS|QMF_SMALLFONT;
++	s_graphicsoptions.showfps.generic.callback = GraphicsOptions_Event;
++	s_graphicsoptions.showfps.generic.id       = ID_SHOWFPS;
++	s_graphicsoptions.showfps.generic.x        = 400;
++	s_graphicsoptions.showfps.generic.y        = y;
++	s_graphicsoptions.showfps.curvalue         = trap_Cvar_VariableValue( "cg_drawFPS" ) != 0;
+ 	y += 2*BIGCHAR_HEIGHT;
+ 
+ 	s_graphicsoptions.driverinfo.generic.type     = MTYPE_PTEXT;
+@@ -1271,6 +1289,7 @@
+ 	Menu_AddItem( &s_graphicsoptions.menu, ( void * ) &s_graphicsoptions.tq );
+ 	Menu_AddItem( &s_graphicsoptions.menu, ( void * ) &s_graphicsoptions.texturebits );
+ 	Menu_AddItem( &s_graphicsoptions.menu, ( void * ) &s_graphicsoptions.filter );
++	Menu_AddItem( &s_graphicsoptions.menu, ( void * ) &s_graphicsoptions.showfps );
+ 	Menu_AddItem( &s_graphicsoptions.menu, ( void * ) &s_graphicsoptions.driverinfo );
+ 
+ 	Menu_AddItem( &s_graphicsoptions.menu, ( void * ) &s_graphicsoptions.back );
