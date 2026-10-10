@@ -1,4 +1,4 @@
-# To do before this repository goes public
+# Publication checklist (done)
 
 - [x] **Artwork.** Decided by Gary, 2026-10-10: the Quake III Arena artwork stays in the
       build. `pic0.dds` and `pic1.dds` are his supplied `quake_iii_arena_4k.png` (id's
@@ -22,7 +22,7 @@
 - [x] **Commit.** One commit on `main` holds the port, on top of the template's generated first commit (squash the two before publishing if a single root commit is wanted).
 - [x] **Badges.** Stars, release and licence badges are under the README title (there is
       no CI workflow, so no CI badge). They render once the repository is public.
-- [ ] **Publish.** Create `griches/PS5_Quake3e`, push `main`, tag `v1.0.0` and attach
-      `dist/Quake3-PS5-v1.0.0.zip` to the release.
+- [x] **Publish.** `griches/PS5_Quake3e` is public; `v1.0.0` is tagged and released with
+      `Quake3-PS5-v1.0.0.zip` (2026-10-10).
 
 Never commit: pak files, `klog/` (console address, user id, system log), `build/`, `dist/`.
