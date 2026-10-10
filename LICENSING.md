@@ -1,7 +1,10 @@
 # Licences
 
-This repository holds files under three licences. Each source file names its own
-in its header; this is the summary.
+The repository as a whole, and any title built from it, is offered under the GNU
+General Public License, version 3 ([`LICENSE`](LICENSE)). Its files come from
+projects under three licences, each compatible with that; every source file names
+its own in its header, and may also be used under that licence alone. This is the
+summary.
 
 | Path | Licence | Text |
 | --- | --- | --- |

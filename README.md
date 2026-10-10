@@ -2,7 +2,7 @@
 
 [![stars](https://img.shields.io/github/stars/griches/PS5_Quake3e?style=flat)](https://github.com/griches/PS5_Quake3e/stargazers)
 [![release](https://img.shields.io/github/v/release/griches/PS5_Quake3e)](https://github.com/griches/PS5_Quake3e/releases/latest)
-[![licence](https://img.shields.io/badge/licence-GPL--3.0%20as%20built-blue)](LICENSE.md)
+[![licence](https://img.shields.io/badge/licence-GPL--3.0%20as%20built-blue)](LICENSING.md)
 
 A PS5 homebrew port of [Quake3e](https://github.com/ec-/Quake3e), an improved
 Quake III Arena engine, drawing with its Vulkan renderer on RADV through the
@@ -168,7 +168,7 @@ title on the home screen) and `pic1.dds` (the splash while it starts), both
 
 ## Licences
 
-See [`LICENSE.md`](LICENSE.md). In short: the port's code is GPL-2.0-or-later, the
+See [`LICENSING.md`](LICENSING.md). In short: the port's code is GPL-2.0-or-later, the
 template's files are MIT, and a built title is GPL-3.0. The Quake III Arena logo
 and artwork in `ps5/sce_sys/` and `ps5/art/` belong to id Software and are not
 covered by those licences.

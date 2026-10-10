@@ -29,7 +29,7 @@ provenance="$vulkan/.deps/native/radv-release/PROVENANCE.txt"
 mkdir -p "$app/licenses"
 cp "$root/licenses/GPL-3.0.txt" "$app/licenses/GPL-3.0.txt"
 cp "$root/licenses/MIT.txt" "$app/licenses/MIT.txt"
-cp "$root/LICENSE.md" "$app/licenses/LICENSE.md"
+cp "$root/LICENSING.md" "$app/licenses/LICENSING.md"
 cat > "$app/SOURCE.txt" <<SOURCE
 Quake III Arena for PlayStation 5 (Quake3e), version $version
 A homebrew port. Not affiliated with id Software or Sony Interactive Entertainment.
