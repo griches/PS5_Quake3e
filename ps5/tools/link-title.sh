@@ -42,12 +42,14 @@ cc -std=c++20 -O2 -fno-exceptions -fno-rtti -c "$native/app_crt.cpp" -o "$work/l
 # RADV calls AGC, which the SDK has no stubs for: these name its imports.
 stub() {
     local library=$1 source=$2
-    cc -std=c11 -O2 -fPIC -c "$vulkan/$source" -o "$work/link/obj/${library}_stub.o"
+    cc -std=c11 -O2 -fPIC -c "$source" -o "$work/link/obj/${library}_stub.o"
     "$sdk/bin/prospero-lld" --shared -soname "${library}.prx" \
         -o "$work/link/stubs/${library}.so" "$work/link/obj/${library}_stub.o"
 }
-stub libSceAgc vendor/ps5/sdk/stubs/agc_canary_link_stub.c
-stub libSceAgcDriver vendor/ps5/sdk/stubs/agc_driver_canary_link_stub.c
+stub libSceAgc "$vulkan/vendor/ps5/sdk/stubs/agc_canary_link_stub.c"
+stub libSceAgcDriver "$vulkan/vendor/ps5/sdk/stubs/agc_driver_canary_link_stub.c"
+# The SDK has no stub for the console's mouse library either (src/platform.c reads it).
+stub libSceMouse "$ps5/stubs/libSceMouse_stub.c"
 
 # shellcheck source=/dev/null
 source "$vulkan/tools/radv-link.sh"
@@ -71,6 +73,7 @@ fi
     -e _start -o "$work/link/llvm-pie.elf" \
     "$work/link/obj/app_crt.o" "${objects[@]}" \
     "$work/link/stubs/libSceAgc.so" "$work/link/stubs/libSceAgcDriver.so" \
+    "$work/link/stubs/libSceMouse.so" \
     "${radv_link_inputs[@]}" \
     --as-needed "$sdk"/target/lib/*.so
 # A title whose localeconv is still the console's reads every glTF fraction as 0
@@ -88,7 +91,8 @@ fi
 null_imports=$(comm -23 \
     <("$sdk/bin/llvm-nm" -D --undefined-only "$work/link/llvm-pie.elf" |
         awk '$1 == "U" { sub(/@.*/, "", $2); print $2 }' | sort -u) \
-    <(for library in "$sdk"/target/lib/*.so "$work/link/stubs/libSceAgc.so" "$work/link/stubs/libSceAgcDriver.so"; do
+    <(for library in "$sdk"/target/lib/*.so "$work/link/stubs/libSceAgc.so" "$work/link/stubs/libSceAgcDriver.so" \
+        "$work/link/stubs/libSceMouse.so"; do
         case ${library##*/} in libkernel_sys.so | libScePosixForWebKit.so) continue ;; esac
         "$sdk/bin/llvm-nm" -D --defined-only "$library" 2>/dev/null | awk '{ print $NF }'
     done | sort -u))
@@ -99,7 +103,7 @@ if [[ -n $null_imports ]]; then
 fi
 "$tool" link --in "$work/link/llvm-pie.elf" --out "$work/eboot.elf.new" \
     --stub-dir "$sdk/target/lib" --stub "$work/link/stubs/libSceAgc.so" \
-    --stub "$work/link/stubs/libSceAgcDriver.so" --module-sdk 0x02000009 \
+    --stub "$work/link/stubs/libSceAgcDriver.so" --stub "$work/link/stubs/libSceMouse.so" --module-sdk 0x02000009 \
     --companion-sdk 0x08050001 --file-name eboot.elf
 
 # The title folder

@@ -51,6 +51,9 @@ set by ps5/ui/ui_controls2.c) the buttons are their gamepad keys again.
 
 static cvar_t *in_ps5LookSpeed;
 static cvar_t *in_ps5MenuSpeed;
+static cvar_t *in_ps5Mouse;
+static cvar_t *in_ps5MouseSpeed;
+static cvar_t *in_ps5Keyboard;
 
 static qboolean in_open;
 static double in_last;
@@ -59,6 +62,8 @@ static float in_remainder_x, in_remainder_y;
 enum {
 	B_CROSS, B_CIRCLE, B_SQUARE, B_TRIANGLE, B_L1, B_R1, B_L2, B_R2, B_L3, B_R3,
 	B_OPTIONS, B_TOUCH, B_UP, B_DOWN, B_LEFT, B_RIGHT, B_STRAFE_LEFT, B_STRAFE_RIGHT,
+	B_MOUSE1, B_MOUSE2, B_MOUSE3, B_MOUSE4, B_MOUSE5,
+	B_KEY_CTRL, B_KEY_SHIFT, B_KEY_ALT, B_KEY_SUPER,
 	B_COUNT
 };
 // the key each control sent down, so the same key goes up whatever the menu state is by then
@@ -104,6 +109,9 @@ int sceImeDialogTerm( void );
 
 static qboolean ime_open;
 static uint16_t ime_text[IME_TEXT_LENGTH + 1];
+
+static qboolean in_keyboard_connected;
+static int in_cross_time;
 
 static void IN_OpenKeyboard( void )
 {
@@ -187,16 +195,196 @@ static void IN_Key( int control, qboolean down, int key )
 }
 
 
+static void IN_KeyboardRelease( void );
+
 static void IN_ReleaseAll( void )
 {
 	int i;
 
 	for ( i = 0; i < B_COUNT; i++ )
 		IN_Key( i, qfalse, 0 );
+	IN_KeyboardRelease();
 	if ( in_axis_forward ) {
 		in_axis_forward = 0;
 		Sys_QueEvent( Sys_Milliseconds(), SE_JOYSTICK_AXIS, AXIS_FORWARD, 0, 0, NULL );
 	}
+}
+
+
+/*
+A mouse, if the console gives the title one: its movement as it comes (the
+engine's sensitivity scales it, as it does the right stick's), its buttons
+MOUSE1 to MOUSE5 and its wheel, in play and in a menu alike.
+*/
+static void IN_Mouse( void )
+{
+	static const uint32_t buttons[] = { MOUSE_LEFT, MOUSE_RIGHT, MOUSE_MIDDLE, MOUSE_BUTTON4, MOUSE_BUTTON5 };
+	static float mouse_remainder_x, mouse_remainder_y;
+	struct mouse mouse;
+	const int now = Sys_Milliseconds();
+	int i, key, dx, dy;
+
+	mouse_poll( &mouse );
+	if ( !in_ps5Mouse->integer )
+		memset( &mouse, 0, sizeof( mouse ) );
+	for ( i = 0; i < ARRAY_LEN( buttons ); i++ )
+		IN_Key( B_MOUSE1 + i, ( mouse.buttons & buttons[i] ) != 0, K_MOUSE1 + i );
+	// the mouse's own speed, beside the sensitivities it shares with the stick
+	mouse_remainder_x += (float)mouse.dx * in_ps5MouseSpeed->value;
+	mouse_remainder_y += (float)mouse.dy * in_ps5MouseSpeed->value;
+	dx = (int)mouse_remainder_x;
+	dy = (int)mouse_remainder_y;
+	mouse_remainder_x -= (float)dx;
+	mouse_remainder_y -= (float)dy;
+	if ( dx || dy )
+		Sys_QueEvent( now, SE_MOUSE, dx, dy, 0, NULL );
+	key = mouse.wheel > 0 ? K_MWHEELUP : K_MWHEELDOWN;
+	for ( i = abs( mouse.wheel ); i > 0; i-- ) {
+		Sys_QueEvent( now, SE_KEY, key, qtrue, 0, NULL );
+		Sys_QueEvent( now, SE_KEY, key, qfalse, 0, NULL );
+	}
+}
+
+
+/*
+A keyboard, if the console gives the title one. Its keys are Quake's own, in
+play and in a menu alike, bound by default.cfg as on a desktop; what it types
+goes to the console, a chat line and the menus' text fields. The characters
+are the US layout's (a UK keyboard's two extra keys type # and \).
+*/
+#define KEY_REPEAT_DELAY 400
+#define KEY_REPEAT_EVERY 33
+
+static int in_key_down[256]; // the key each usage sent down, as in_down
+static int in_repeat_usage, in_repeat_time;
+static qboolean in_caps_lock;
+
+static int IN_KeyOfUsage( int usage )
+{
+	static const short keys[] = {
+		/* 0x28 */ K_ENTER, K_ESCAPE, K_BACKSPACE, K_TAB, K_SPACE, '-', '=', '[', ']', '\\', '#', ';', '\'', K_CONSOLE, ',', '.', '/',
+		/* 0x39 */ K_CAPSLOCK, K_F1, K_F2, K_F3, K_F4, K_F5, K_F6, K_F7, K_F8, K_F9, K_F10, K_F11, K_F12,
+		/* 0x46 */ K_PRINT, K_SCROLLOCK, K_PAUSE, K_INS, K_HOME, K_PGUP, K_DEL, K_END, K_PGDN,
+		/* 0x4f */ K_RIGHTARROW, K_LEFTARROW, K_DOWNARROW, K_UPARROW,
+		/* 0x53 */ K_KP_NUMLOCK, K_KP_SLASH, K_KP_STAR, K_KP_MINUS, K_KP_PLUS, K_KP_ENTER,
+		/* 0x59 */ K_KP_END, K_KP_DOWNARROW, K_KP_PGDN, K_KP_LEFTARROW, K_KP_5, K_KP_RIGHTARROW,
+		/* 0x5f */ K_KP_HOME, K_KP_UPARROW, K_KP_PGUP, K_KP_INS, K_KP_DEL, '\\', K_MENU, 0, K_KP_EQUALS,
+	};
+
+	if ( usage >= 0x04 && usage <= 0x1d )
+		return 'a' + usage - 0x04;
+	if ( usage >= 0x1e && usage <= 0x27 )
+		return "1234567890"[usage - 0x1e];
+	if ( usage >= 0x28 && usage < 0x28 + ARRAY_LEN( keys ) )
+		return keys[usage - 0x28];
+	return 0;
+}
+
+
+// what a key types, 0 for a key that types nothing
+static int IN_CharOfUsage( int usage, int modifiers )
+{
+	static const char plain[] = "1234567890\r\0\0\0 -=[]\\#;'\0,./";
+	static const char shifted[] = "!@#$%^&*()\r\0\0\0 _+{}|~:\"\0<>?";
+	static const char keypad[] = "/*-+\r1234567890.";
+	const qboolean shift = ( modifiers & ( KEYBOARD_LEFT_SHIFT | KEYBOARD_RIGHT_SHIFT ) ) != 0;
+	const qboolean ctrl = ( modifiers & ( KEYBOARD_LEFT_CTRL | KEYBOARD_RIGHT_CTRL ) ) != 0;
+
+	if ( usage >= 0x04 && usage <= 0x1d ) {
+		if ( ctrl )
+			return usage - 0x04 + 1; // ctrl-a is 1
+		return ( shift != in_caps_lock ? 'A' : 'a' ) + usage - 0x04;
+	}
+	if ( ctrl )
+		return 0;
+	if ( usage == 0x2a )
+		return 'h' - 'a' + 1; // backspace, as the engine's fields take it
+	if ( usage >= 0x1e && usage <= 0x38 )
+		return ( shift ? shifted : plain )[usage - 0x1e];
+	if ( usage >= 0x54 && usage <= 0x63 )
+		return keypad[usage - 0x54];
+	if ( usage == 0x64 )
+		return shift ? '|' : '\\';
+	return 0;
+}
+
+
+static void IN_KeyboardRelease( void )
+{
+	const int now = Sys_Milliseconds();
+	int i;
+
+	for ( i = 0; i < ARRAY_LEN( in_key_down ); i++ ) {
+		if ( in_key_down[i] ) {
+			Sys_QueEvent( now, SE_KEY, in_key_down[i], qfalse, 0, NULL );
+			in_key_down[i] = 0;
+		}
+	}
+	in_repeat_usage = 0;
+}
+
+
+static void IN_Keyboard( void )
+{
+	struct keyboard keyboard;
+	const int now = Sys_Milliseconds();
+	int i, usage, key, character;
+
+	in_keyboard_connected = keyboard_poll( &keyboard ) && in_ps5Keyboard->integer;
+	if ( !in_keyboard_connected ) {
+		memset( &keyboard, 0, sizeof( keyboard ) );
+		IN_KeyboardRelease();
+	}
+	IN_Key( B_KEY_CTRL, ( keyboard.modifiers & ( KEYBOARD_LEFT_CTRL | KEYBOARD_RIGHT_CTRL ) ) != 0, K_CTRL );
+	IN_Key( B_KEY_SHIFT, ( keyboard.modifiers & ( KEYBOARD_LEFT_SHIFT | KEYBOARD_RIGHT_SHIFT ) ) != 0, K_SHIFT );
+	IN_Key( B_KEY_ALT, ( keyboard.modifiers & ( KEYBOARD_LEFT_ALT | KEYBOARD_RIGHT_ALT ) ) != 0, K_ALT );
+	IN_Key( B_KEY_SUPER, ( keyboard.modifiers & ( KEYBOARD_LEFT_GUI | KEYBOARD_RIGHT_GUI ) ) != 0, K_SUPER );
+
+	for ( i = 0; i < keyboard.event_count; i++ ) {
+		usage = keyboard.events[i].usage;
+		if ( !keyboard.events[i].down ) {
+			if ( in_key_down[usage] ) {
+				Sys_QueEvent( now, SE_KEY, in_key_down[usage], qfalse, 0, NULL );
+				in_key_down[usage] = 0;
+			}
+			if ( in_repeat_usage == usage )
+				in_repeat_usage = 0;
+			continue;
+		}
+		key = IN_KeyOfUsage( usage );
+		if ( !key || in_key_down[usage] )
+			continue;
+		in_key_down[usage] = key;
+		if ( key == K_CAPSLOCK )
+			in_caps_lock = !in_caps_lock;
+		Sys_QueEvent( now, SE_KEY, key, qtrue, 0, NULL );
+		// the console's key opens and closes the console, and types nothing into it
+		character = key == K_CONSOLE ? 0 : IN_CharOfUsage( usage, keyboard.modifiers );
+		if ( character )
+			Sys_QueEvent( now, SE_CHAR, character, 0, 0, NULL );
+		in_repeat_usage = usage;
+		in_repeat_time = now + KEY_REPEAT_DELAY;
+	}
+
+	// a key held down repeats, as a desktop's does (the engine does not act on a
+	// bound key's repeats)
+	if ( in_repeat_usage && in_key_down[in_repeat_usage] && now >= in_repeat_time ) {
+		in_repeat_time = now + KEY_REPEAT_EVERY;
+		Sys_QueEvent( now, SE_KEY, in_key_down[in_repeat_usage], qtrue, 0, NULL );
+		character = in_key_down[in_repeat_usage] == K_CONSOLE ? 0 : IN_CharOfUsage( in_repeat_usage, keyboard.modifiers );
+		if ( character )
+			Sys_QueEvent( now, SE_CHAR, character, 0, 0, NULL );
+	}
+}
+
+
+// The menus' text fields ask for the on-screen keyboard at ENTER or a click
+// (ps5/ui/ui_mfield.c): with a keyboard plugged in, only the pad's CROSS opens it
+static void IN_OpenKeyboard_f( void )
+{
+	if ( in_keyboard_connected && Sys_Milliseconds() - in_cross_time > 250 )
+		return;
+	IN_OpenKeyboard();
 }
 
 
@@ -231,6 +419,10 @@ void HandleEvents( void )
 	if ( !menu && Cvar_VariableIntegerValue( "ui_ps5WaitingForKey" ) != 0 )
 		Cvar_Set( "ui_ps5WaitingForKey", "0" ); // the menu went away mid-binding
 
+	IN_Mouse();
+	IN_Keyboard();
+	if ( pad.pressed & PAD_CROSS )
+		in_cross_time = Sys_Milliseconds();
 	IN_Key( B_OPTIONS, ( pad.held & PAD_OPTIONS ) != 0, K_ESCAPE );
 	if ( menu && !binding ) {
 		if ( pad.pressed & PAD_TRIANGLE ) {
@@ -358,7 +550,7 @@ static void IN_DefaultBinds( void )
 
 qboolean Key_CapsLockOn( void )
 {
-	return qfalse;
+	return in_caps_lock;
 }
 
 
@@ -374,14 +566,25 @@ void IN_Init( void )
 	in_ps5MenuSpeed = Cvar_Get( "in_ps5MenuSpeed", "500", CVAR_ARCHIVE );
 	Cvar_SetDescription( in_ps5MenuSpeed, "PS5: the sticks at full tilt in a menu, in pointer steps a second." );
 
+	in_ps5Mouse = Cvar_Get( "in_ps5Mouse", "1", CVAR_ARCHIVE );
+	Cvar_SetDescription( in_ps5Mouse, "PS5: take a USB or Bluetooth mouse's movement, buttons and wheel." );
+
+	in_ps5MouseSpeed = Cvar_Get( "in_ps5MouseSpeed", "1", CVAR_ARCHIVE );
+	Cvar_CheckRange( in_ps5MouseSpeed, "0.1", "10", CV_FLOAT );
+	Cvar_SetDescription( in_ps5MouseSpeed, "PS5: a mouse's movement is multiplied by this (the right stick's is not)." );
+	in_ps5Keyboard = Cvar_Get( "in_ps5Keyboard", "1", CVAR_ARCHIVE );
+	Cvar_SetDescription( in_ps5Keyboard, "PS5: take a USB or Bluetooth keyboard's keys." );
+
 	if ( !in_open ) {
 		// the menus' text fields ask for the keyboard with this (ps5/ui/ui_mfield.c)
-		Cmd_AddCommand( "ps5_keyboard", IN_OpenKeyboard );
+		Cmd_AddCommand( "ps5_keyboard", IN_OpenKeyboard_f );
 		// the controls menu sets this while a binding waits for a button
 		Cvar_Get( "ui_ps5WaitingForKey", "0", CVAR_TEMP );
 		IN_DefaultBinds();
 		in_open = pad_open() ? qtrue : qfalse;
 		Com_Printf( "PS5 pad: %s\n", in_open ? "open" : "none" );
+		Com_Printf( "PS5 mouse: %s\n", mouse_open() ? "open" : "none" );
+		Com_Printf( "PS5 keyboard: %s\n", keyboard_open() ? "open" : "none" );
 	}
 	in_last = now_seconds();
 }

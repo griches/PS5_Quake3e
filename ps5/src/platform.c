@@ -37,6 +37,15 @@ int scePadClose(int32_t handle);
 int scePadSetVibrationMode(int32_t handle, int32_t mode);
 int scePadSetVibration(int32_t handle, const void *vibration);
 int scePadSetLightBar(int32_t handle, const void *color);
+int sceKernelLoadStartModule(const char *name, size_t argc, const void *argv, uint32_t flags,
+                             const void *option, int *result);
+const char *sceKernelGetFsSandboxRandomWord(void);
+int sceMouseInit(void);
+int sceMouseOpen(int32_t user_id, int32_t type, int32_t index, const void *params);
+int sceMouseRead(int32_t handle, void *samples, int32_t capacity);
+int sceKeyboardInit(void);
+int sceKeyboardOpen(int32_t user_id, int32_t type, int32_t index, const void *params);
+int sceKeyboardRead(int32_t handle, void *samples, int32_t capacity);
 int sceAudioOutInit(void);
 int sceAudioOutOpen(int32_t user, int32_t type, int32_t index, uint32_t grain, uint32_t rate,
                     uint32_t format);
@@ -362,6 +371,194 @@ void
 pad_light_bar(uint8_t r, uint8_t g, uint8_t b)
 {
    pad_player_light_bar(0, r, g, b);
+}
+
+/* --------------------------------------------------------------- the mouse */
+
+#define MOUSE_INTERCEPTED 0x80000000u
+#define MOUSE_READINGS 64
+
+/* One reading as the console writes it: 40 bytes, the PlayStation 4's layout
+ * (2026-10-11: movement and the first two buttons read back from klog, the
+ * wheel seen changing weapons; the other buttons are as the PlayStation 4 has
+ * them). */
+struct mouse_sample {
+   uint64_t timestamp_us;
+   uint8_t connected;
+   uint8_t padding[3];
+   uint32_t buttons;
+   int32_t x, y, wheel, tilt;
+   uint8_t reserved[8];
+};
+_Static_assert(sizeof(struct mouse_sample) == 40, "the console's mouse readings are 40 bytes");
+
+/* Load one of the console's libraries from the sandbox's own name for /system. */
+static int
+system_library(const char *name)
+{
+   const char *word = sceKernelGetFsSandboxRandomWord();
+   char path[128];
+   snprintf(path, sizeof(path), "/%s/common/lib/%s", word != NULL ? word : "system", name);
+   const int module = sceKernelLoadStartModule(path, 0, NULL, 0, NULL, NULL);
+   say("%s gave 0x%08x", path, (unsigned)module);
+   return module;
+}
+
+static int32_t mouse_handle = -1;
+
+bool
+mouse_open(void)
+{
+   if (mouse_handle >= 0)
+      return true;
+   /* The title links against a stub of the library (ps5/stubs); the console
+    * binds a name at its first call, from the modules loaded by then (an
+    * import's address reads 0 before that, the on-screen keyboard's too, so it
+    * tells nothing). The library's file is loaded from the sandbox's own name
+    * for /system: sysmodule 0x00a8 loaded, and sceMouseInit then jumped to 0
+    * (2026-10-11). */
+   if (system_library("libSceMouse.sprx") < 0)
+      return false;
+
+   (void)sceUserServiceInitialize(NULL);
+   int32_t user = -1;
+   const int got_user = sceUserServiceGetInitialUser(&user);
+   const int started = sceMouseInit();
+   mouse_handle = sceMouseOpen(user, 0, 0, NULL);
+   say("mouse: user %d (0x%08x), sceMouseInit gave 0x%08x, sceMouseOpen gave 0x%08x", (int)user,
+       (unsigned)got_user, (unsigned)started, (unsigned)mouse_handle);
+   return mouse_handle >= 0;
+}
+
+bool
+mouse_poll(struct mouse *mouse)
+{
+   static struct mouse_sample samples[MOUSE_READINGS];
+   static int last_count;
+   static uint32_t held;
+   static bool connected;
+   bool taken = false;
+
+   *mouse = (struct mouse){0};
+   if (mouse_handle < 0)
+      return false;
+   const int count = sceMouseRead(mouse_handle, samples, MOUSE_READINGS);
+   if ((count < 0 || last_count < 0) && count != last_count)
+      say("mouse: sceMouseRead gave 0x%08x", (unsigned)count);
+   last_count = count;
+   for (int i = 0; i < count && i < MOUSE_READINGS; i++) {
+      const struct mouse_sample s = samples[i];
+      if ((s.connected != 0) != connected) {
+         connected = s.connected != 0;
+         say("mouse: %s", connected ? "connected" : "disconnected");
+      }
+      if (!connected || (s.buttons & MOUSE_INTERCEPTED))
+         continue;
+      mouse->dx += s.x;
+      mouse->dy += s.y;
+      mouse->wheel += s.wheel;
+      held = s.buttons;
+      taken = true;
+   }
+   if (!connected)
+      held = 0;
+   mouse->buttons = held;
+   mouse->connected = connected;
+   return taken;
+}
+
+/* ------------------------------------------------------------ the keyboard */
+
+#define KEYBOARD_KEYS 16
+#define KEYBOARD_READINGS 16
+
+/* One reading as the console writes it: 64 bytes, read back from klog
+ * (2026-10-11). The console takes a reading when a key changes, and each has
+ * every key then down. The bytes named padding it leaves as they were. */
+struct keyboard_sample {
+   uint64_t timestamp_us;
+   uint8_t unknown; /* 0 in every reading seen */
+   uint8_t padding[7];
+   uint8_t connected;
+   uint8_t padding2[3];
+   uint32_t count; /* the keys down, and 1 with none */
+   uint32_t unknown2;
+   uint32_t modifiers;
+   uint16_t usages[KEYBOARD_KEYS];
+};
+_Static_assert(sizeof(struct keyboard_sample) == 64, "the console's keyboard readings are 64 bytes");
+
+static int32_t keyboard_handle = -1;
+
+bool
+keyboard_open(void)
+{
+   if (keyboard_handle >= 0)
+      return true;
+   if (system_library("libSceKeyboard.sprx") < 0)
+      return false;
+   (void)sceUserServiceInitialize(NULL);
+   int32_t user = -1;
+   const int got_user = sceUserServiceGetInitialUser(&user);
+   const int started = sceKeyboardInit();
+   keyboard_handle = sceKeyboardOpen(user, 0, 0, NULL);
+   say("keyboard: user %d (0x%08x), sceKeyboardInit gave 0x%08x, sceKeyboardOpen gave 0x%08x",
+       (int)user, (unsigned)got_user, (unsigned)started, (unsigned)keyboard_handle);
+   return keyboard_handle >= 0;
+}
+
+static bool
+keyboard_has(const uint16_t *usages, uint16_t usage)
+{
+   for (int i = 0; i < KEYBOARD_KEYS; i++)
+      if (usages[i] == usage)
+         return true;
+   return false;
+}
+
+static void
+keyboard_changes(struct keyboard *keyboard, const uint16_t *from, const uint16_t *to, bool down)
+{
+   for (int i = 0; i < KEYBOARD_KEYS; i++) {
+      /* 1 to 3 are the HID's errors (too many keys down), not keys */
+      if (to[i] < 4 || to[i] > 0xff || keyboard_has(from, to[i]))
+         continue;
+      if (keyboard->event_count < (int)(sizeof(keyboard->events) / sizeof(keyboard->events[0])))
+         keyboard->events[keyboard->event_count++] = (struct keyboard_event){(uint8_t)to[i], down};
+   }
+}
+
+bool
+keyboard_poll(struct keyboard *keyboard)
+{
+   static const uint16_t none[KEYBOARD_KEYS];
+   static struct keyboard_sample samples[KEYBOARD_READINGS];
+   static uint16_t held[KEYBOARD_KEYS];
+   static uint8_t modifiers;
+   static bool connected;
+
+   *keyboard = (struct keyboard){0};
+   if (keyboard_handle < 0)
+      return false;
+   const int count = sceKeyboardRead(keyboard_handle, samples, KEYBOARD_READINGS);
+   for (int i = 0; i < count && i < KEYBOARD_READINGS; i++) {
+      const struct keyboard_sample *s = &samples[i];
+      if ((s->connected != 0) != connected) {
+         connected = s->connected != 0;
+         say("keyboard: %s", connected ? "connected" : "disconnected");
+      }
+      const uint16_t *now = connected ? s->usages : none;
+      /* a reading with an error in it says nothing of the keys: keep the last */
+      if (now[0] >= 1 && now[0] <= 3)
+         continue;
+      keyboard_changes(keyboard, now, held, false);
+      keyboard_changes(keyboard, held, now, true);
+      memcpy(held, now, sizeof(held));
+      modifiers = connected ? (uint8_t)s->modifiers : 0;
+   }
+   keyboard->connected = connected;
+   keyboard->modifiers = modifiers;
+   return connected;
 }
 
 /* --------------------------------------------------------------- the sound */

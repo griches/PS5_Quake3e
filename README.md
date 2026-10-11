@@ -7,13 +7,14 @@
 A PS5 homebrew port of [Quake3e](https://github.com/ec-/Quake3e), an improved
 Quake III Arena engine, drawing with its Vulkan renderer on RADV through the
 [PS5 Vulkan Template](https://github.com/mihawk-99/PS5_VulkanTemplate) stack.
+It plays with the DualSense, or with a USB mouse and keyboard.
 
 It needs a PS5 that already runs homebrew, and your own copy of the game's data.
 No game data, Sony software or keys are included.
 
 ## Status
 
-Tested on one console, on 2026-10-10. "Seen" means it ran there and I watched it
+Tested on one console, on 2026-10-10 (the mouse and keyboard on 2026-10-11). "Seen" means it ran there and I watched it
 or read it in the console's log; nothing else is claimed.
 
 | Area | Seen on the console | Not yet verified |
@@ -21,7 +22,7 @@ or read it in the console's log; nothing else is claimed.
 | Start-up and exit | Boots to the menu, loads all nine pak files, quits cleanly to the home screen | |
 | Rendering | Single player plays at 3840x2160 on a 59.94 Hz display | Whether it holds 60 fps everywhere; 120 Hz (the test display stayed at 60) |
 | Video modes | The menu lists 3840x2160, 2560x1440 and 1920x1080; a live switch to 1920x1080 went through | 2560x1440 |
-| Input | DualSense: sticks, buttons, triggers; a button rebound in the controls menu, saved across launches | The two sensitivity sliders and invert look |
+| Input | DualSense: sticks, buttons, triggers; a button rebound in the controls menu, saved across launches. A USB mouse (movement, three buttons, the wheel) and a USB keyboard, 2026-10-11 | The two sensitivity sliders and invert look; the mouse speed slider; a mouse's side buttons; a Bluetooth mouse or keyboard |
 | Sound | 48 kHz stereo effects | Music (no Ogg Vorbis in this build) |
 | Network | Name lookup works; the Internet server list fills (over 1,000 servers); a server's own pak files downloaded | A full online or LAN match, start to finish |
 | On-screen keyboard | The console's keyboard opens from a menu | The field being cleared before the typed text goes in |
@@ -31,7 +32,7 @@ Known limits:
 
 - The game modules run in the bytecode interpreter; there is no JIT yet.
 - No fast (HTTP) downloads, so servers that need extra pak files will crawl or stall.
-- No USB keyboard or mouse: the DualSense is the only input.
+- A keyboard types the US layout's characters, whatever the keyboard's own.
 - Stepping sideways on the left stick is on or off, not analog.
 - The menus are ioquake3's; a pure server's own menus take over while connected.
 
@@ -41,7 +42,7 @@ You need a PS5 that already runs homebrew: an enabler such as etaHEN,
 ShadowMountPlus (it shows titles in `/data/homebrew` on the home screen) and an FTP
 server (ftpsrv, port 2121). Setting that up is not covered here.
 
-1. **Get the title.** Download `Quake3-PS5-v1.0.0.zip` from the
+1. **Get the title.** Download `Quake3-PS5-v1.1.0.zip` from the
    [latest release](https://github.com/griches/PS5_Quake3e/releases/latest) and
    unzip it. It holds one folder, `PPSA99303`.
 2. **Get the game data** (not included, see the table below): `pak0.pk3` from your
@@ -102,7 +103,17 @@ another action in Setup, Controls (CROSS on an action, then the button; SQUARE
 clears it). The sticks and OPTIONS are fixed. Look sensitivity is two sliders,
 horizontal and vertical, with invert look beside them.
 
-The port's own cvars: `in_ps5LookSpeed`, `in_ps5MenuSpeed`,
+A mouse and a keyboard plugged into the console work beside the pad, bound as
+the game binds them by default (W, A, S and D, fire on the left button, the
+weapons on the wheel and the number keys). The keyboard types into the console
+(the key left of 1), a chat line and the menus' text fields. Setup, Controls
+shows a pad button and a mouse or keyboard key side by side for an action, and
+a new one takes the place of its own kind. The mouse has its own speed slider
+there (`in_ps5MouseSpeed`); the sensitivities, invert look and smooth look are
+the stick's and the mouse's alike. `in_ps5Mouse 0` and
+`in_ps5Keyboard 0` turn them off.
+
+The port's own cvars: `in_ps5LookSpeed`, `in_ps5MenuSpeed`, `in_ps5Mouse`, `in_ps5MouseSpeed`, `in_ps5Keyboard`,
 `r_ps5Height` (2160, 1440 or 1080 when the menu has not chosen) and `r_ps5Refresh`.
 
 ## How it is put together
@@ -116,16 +127,18 @@ Quake3e's sources are compiled unchanged from the `vendor/Quake3e` submodule
 | `ps5_sys.c` | `unix/unix_main.c` | launch, the main loop, the log, the exit through the shell, name lookup, the libc calls the console lacks |
 | `ps5_shared.c` | `unix/unix_shared.c` | time, file listing, files and folders FTP can reach |
 | `ps5_glimp.c` | `sdl/sdl_glimp.c` | RADV's entry point, the `VK_KHR_display` surface, the display modes |
-| `ps5_input.c` | `sdl/sdl_input.c` | the DualSense as Quake's keys, mouse and joystick; the on-screen keyboard |
+| `ps5_input.c` | `sdl/sdl_input.c` | the DualSense as Quake's keys, mouse and joystick; a USB mouse and keyboard; the on-screen keyboard |
 | `ps5_snd.c` | `sdl/sdl_snd.c` | the mixer's buffer through the console's 48 kHz output |
 
-`ps5/src/platform.c` is the template's PS5 layer (log, pad, sound, exit).
+`ps5/src/platform.c` is the template's PS5 layer (log, pad, mouse, keyboard, sound, exit).
+The SDK has no stub for the console's mouse library, so `ps5/stubs/` names its
+calls for the link.
 
 The menus are a second build: ioquake3's `q3_ui` from the `vendor/ioq3` submodule
 (pinned at `83a7762`), copied to `build/ui-src/` with the files in `ps5/ui/` over the
 copy (`ps5/ui/q3_ui.patch` is the difference), compiled to a QVM and packed as `baseq3/zz-ps5-ui.pk3`. The changes: the graphics menu lists the
 console's display modes and has a Show FPS switch, the controls menu shows and binds
-the DualSense's buttons and has the two look sensitivities, text fields open the
+the DualSense's buttons beside a mouse's and a keyboard's and has the two look sensitivities, text fields open the
 on-screen keyboard, there is no CD key prompt at start-up, and the credits describe
 this build.
 
@@ -137,7 +150,7 @@ The stack builds on Linux. On macOS this repository drives a Lima VM:
 git submodule update --init   # Quake3e and ioquake3, at their pinned revisions
 ps5/tools/vm.sh build      # the title: dist/PPSA99303/
 ps5/tools/vm.sh build-ui   # the menus: dist/PPSA99303/baseq3/zz-ps5-ui.pk3
-ps5/tools/vm.sh package-release 1.0.0   # dist/Quake3-PS5-v1.0.0.zip, from a clean commit
+ps5/tools/vm.sh package-release 1.1.0   # dist/Quake3-PS5-v1.1.0.zip, from a clean commit
 ps5/tools/vm.sh deploy     # FTP to the console (needs the stack's control payload)
 ps5/tools/vm.sh run        # launch and follow the console's log
 ```

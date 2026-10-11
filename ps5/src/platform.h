@@ -94,6 +94,62 @@ void pad_player_vibrate(int player, float large, float small);
 void pad_light_bar(uint8_t r, uint8_t g, uint8_t b);
 void pad_player_light_bar(int player, uint8_t r, uint8_t g, uint8_t b);
 
+/* A USB or Bluetooth mouse (libSceMouse), the first user's. */
+enum {
+   MOUSE_LEFT = 0x01,
+   MOUSE_RIGHT = 0x02,
+   MOUSE_MIDDLE = 0x04,
+   MOUSE_BUTTON4 = 0x08,
+   MOUSE_BUTTON5 = 0x10,
+};
+
+struct mouse {
+   int dx, dy;       /* counts moved since the last poll; y is down-positive */
+   int wheel;        /* notches turned since the last poll */
+   uint32_t buttons; /* buttons down now */
+   bool connected;
+};
+
+/* Load the console's mouse library and open the first user's mouse; false when
+ * the console gives the title none. A mouse may be plugged in later. */
+bool mouse_open(void);
+/* What the mouse did since the last poll; false, and a mouse at rest, when
+ * there is none or the shell has it. Call once a frame. */
+bool mouse_poll(struct mouse *mouse);
+
+/* A USB or Bluetooth keyboard (libSceKeyboard), the first user's. A key is its
+ * USB HID usage (0x04 is A, 0x28 Enter, 0x52 the up arrow); the modifier keys
+ * are a bit each, in the HID's own order. */
+enum {
+   KEYBOARD_LEFT_CTRL = 0x01,
+   KEYBOARD_LEFT_SHIFT = 0x02,
+   KEYBOARD_LEFT_ALT = 0x04,
+   KEYBOARD_LEFT_GUI = 0x08,
+   KEYBOARD_RIGHT_CTRL = 0x10,
+   KEYBOARD_RIGHT_SHIFT = 0x20,
+   KEYBOARD_RIGHT_ALT = 0x40,
+   KEYBOARD_RIGHT_GUI = 0x80,
+};
+
+struct keyboard_event {
+   uint8_t usage;
+   bool down;
+};
+
+struct keyboard {
+   bool connected;
+   uint8_t modifiers; /* the modifier keys down now */
+   int event_count;   /* the keys that went down or up since the last poll, in order */
+   struct keyboard_event events[64];
+};
+
+/* Load the console's keyboard library and open the first user's keyboard; false
+ * when the console gives the title none. A keyboard may be plugged in later. */
+bool keyboard_open(void);
+/* What the keyboard did since the last poll; false, and a keyboard at rest,
+ * when there is none. Call once a frame. */
+bool keyboard_poll(struct keyboard *keyboard);
+
 /* Sound: one 48 kHz output of interleaved stereo 16-bit samples. A thread of
  * its own calls fill for 256 frames at a time and blocks while the console
  * plays them, so fill paces itself and must never wait on the render loop.

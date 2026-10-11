@@ -124,6 +124,7 @@ typedef struct
 #define ID_SMOOTHMOUSE	42
 #define ID_LOOKSPEEDX	43	// PS5
 #define ID_LOOKSPEEDY	44	// PS5
+#define ID_PS5MOUSESPEED	45	// PS5
 
 #define ANIM_IDLE		0
 #define ANIM_RUN		1
@@ -199,6 +200,7 @@ typedef struct
 	menuslider_s		sensitivity;
 	menuslider_s		lookspeedx;	// PS5: m_yaw, in tenths of its default
 	menuslider_s		lookspeedy;	// PS5: m_pitch, likewise
+	menuslider_s		mousespeed;	// PS5: in_ps5MouseSpeed, in tenths
 	menuradiobutton_s	smoothmouse;
 	menuradiobutton_s	alwaysrun;
 	menuaction_s		showscores;
@@ -262,6 +264,9 @@ ioquake3's keycodes.h, which this module is compiled with, numbers them otherwis
 #define PS5_M_STEP				0.0022f
 #define PS5_M_DEFAULT_STEPS		10
 #define PS5_M_MAX_STEPS			30
+// A mouse's own speed beside the stick's (the engine's in_ps5MouseSpeed, which
+// scales a mouse's movement alone): a step is a tenth, 10 a mouse as it comes.
+#define PS5_MOUSE_STEP			0.1f
 
 // A key's name as the menu shows it: the console's own name for a pad key
 static void Controls_KeyName( int key, char *name, int size )
@@ -287,6 +292,12 @@ static void Controls_KeyName( int key, char *name, int size )
 			return;
 		}
 	}
+}
+
+// A pad key, or a mouse's or a keyboard's
+static qboolean Controls_IsPadKey( int key )
+{
+	return key >= PS5_KEY_FIRST && key <= PS5_KEY_LAST;
 }
 
 // The engine sends the pad's own keys, not the menus', while a binding waits for one
@@ -346,6 +357,7 @@ static configcvar_t g_configcvars[] =
 	{"sensitivity",		0,					0},
 	{"m_yaw",			0,					0},
 	{"m_filter",		0,					0},
+	{"in_ps5MouseSpeed",	0,				0},
 	{"cl_freelook",		0,					0},
 	{NULL,				0,					0}
 };
@@ -386,6 +398,7 @@ static menucommon_s *g_weapons_controls[] = {
 static menucommon_s *g_looking_controls[] = {
 	(menucommon_s *)&s_controls.lookspeedx,
 	(menucommon_s *)&s_controls.lookspeedy,
+	(menucommon_s *)&s_controls.mousespeed,
 	(menucommon_s *)&s_controls.smoothmouse,
 	(menucommon_s *)&s_controls.invertmouse,
 	(menucommon_s *)&s_controls.lookup,
@@ -822,28 +835,40 @@ Controls_GetKeyAssignment
 */
 static void Controls_GetKeyAssignment (char *command, int *twokeys)
 {
-	int		count;
 	int		j;
 	char	b[256];
+	int		pad[2], other[2];
+	int		pads, others;
 
 	twokeys[0] = twokeys[1] = -1;
-	count = 0;
+	pads = others = 0;
 
-	// PS5: only the pad's keys. default.cfg binds a keyboard the console does not
-	// have; those binds are left alone and never shown.
-	for ( j = PS5_KEY_FIRST; j <= PS5_KEY_LAST; j++ )
+	// PS5: a pad key first, and a mouse or keyboard key beside it where the
+	// command has both; two of one kind where it has only that kind. The binds
+	// that do not fit in the two places are left alone and never shown.
+	for ( j = 0; j <= PS5_KEY_LAST; j++ )
 	{
-		int key = j;
-		trap_Key_GetBindingBuf( key, b, 256 );
+		trap_Key_GetBindingBuf( j, b, 256 );
 		if ( *b == 0 ) {
 			continue;
 		}
 		if ( !Q_stricmp( b, command ) ) {
-			twokeys[count] = key;
-			count++;
-			if (count == 2)
-				break;
+			if ( Controls_IsPadKey( j ) ) {
+				if ( pads < 2 )
+					pad[pads++] = j;
+			} else if ( others < 2 ) {
+				other[others++] = j;
+			}
 		}
+	}
+	if ( pads && others ) {
+		twokeys[0] = pad[0];
+		twokeys[1] = other[0];
+	} else {
+		for ( j = 0; j < pads; j++ )
+			twokeys[j] = pad[j];
+		for ( j = 0; j < others; j++ )
+			twokeys[j] = other[j];
 	}
 }
 
@@ -877,6 +902,7 @@ static void Controls_GetConfig( void )
 	s_controls.alwaysrun.curvalue    = UI_ClampCvar( 0, 1, Controls_GetCvarValue( "cl_run" ) );
 	s_controls.autoswitch.curvalue   = UI_ClampCvar( 0, 1, Controls_GetCvarValue( "cg_autoswitch" ) );
 	s_controls.lookspeedx.curvalue   = UI_ClampCvar( 1, PS5_M_MAX_STEPS, (int)( fabs( Controls_GetCvarValue( "m_yaw" ) ) * Controls_GetCvarValue( "sensitivity" ) / ( PS5_M_STEP * PS5_SENSITIVITY ) + 0.5f ) );
+	s_controls.mousespeed.curvalue   = UI_ClampCvar( 1, PS5_M_MAX_STEPS, (int)( Controls_GetCvarValue( "in_ps5MouseSpeed" ) / PS5_MOUSE_STEP + 0.5f ) );
 	s_controls.lookspeedy.curvalue   = UI_ClampCvar( 1, PS5_M_MAX_STEPS, (int)( fabs( Controls_GetCvarValue( "m_pitch" ) ) * Controls_GetCvarValue( "sensitivity" ) / ( PS5_M_STEP * PS5_SENSITIVITY ) + 0.5f ) );
 	s_controls.freelook.curvalue     = UI_ClampCvar( 0, 1, Controls_GetCvarValue( "cl_freelook" ) );
 }
@@ -910,6 +936,7 @@ static void Controls_SetConfig( void )
 
 	// PS5: the two look speeds are m_yaw and m_pitch; the sign of m_pitch is the inversion
 	trap_Cvar_SetValue( "m_yaw", s_controls.lookspeedx.curvalue * PS5_M_STEP );
+	trap_Cvar_SetValue( "in_ps5MouseSpeed", s_controls.mousespeed.curvalue * PS5_MOUSE_STEP );
 	if ( s_controls.invertmouse.curvalue )
 		trap_Cvar_SetValue( "m_pitch", -s_controls.lookspeedy.curvalue * PS5_M_STEP );
 	else
@@ -951,6 +978,7 @@ static void Controls_SetDefaults( void )
 	s_controls.autoswitch.curvalue   = Controls_GetCvarDefault( "cg_autoswitch" );
 	s_controls.lookspeedx.curvalue   = PS5_M_DEFAULT_STEPS;
 	s_controls.lookspeedy.curvalue   = PS5_M_DEFAULT_STEPS;
+	s_controls.mousespeed.curvalue   = PS5_M_DEFAULT_STEPS;
 	s_controls.freelook.curvalue     = Controls_GetCvarDefault( "cl_freelook" );
 }
 
@@ -1053,12 +1081,19 @@ static sfxHandle_t Controls_MenuKey( int key )
 			else if (bindptr->bind1 != key && bindptr->bind2 == -1) {
 				bindptr->bind2 = key;
 			}
-			else
+			else if (bindptr->bind1 != key && bindptr->bind2 != key)
 			{
-				trap_Key_SetBinding( bindptr->bind1, "" );
-				trap_Key_SetBinding( bindptr->bind2, "" );
-				bindptr->bind1 = key;
-				bindptr->bind2 = -1;
+				// PS5: both places taken. The key takes the place of one of its own
+				// kind (a pad key's, or a mouse or keyboard key's), so a pad's bind
+				// and a mouse's stay side by side; the second place failing that.
+				if ( Controls_IsPadKey( bindptr->bind2 ) != Controls_IsPadKey( key )
+					&& Controls_IsPadKey( bindptr->bind1 ) == Controls_IsPadKey( key ) ) {
+					trap_Key_SetBinding( bindptr->bind1, "" );
+					bindptr->bind1 = key;
+				} else {
+					trap_Key_SetBinding( bindptr->bind2, "" );
+					bindptr->bind2 = key;
+				}
 			}						
 			break;
 		}
@@ -1181,6 +1216,7 @@ static void Controls_MenuEvent( void* ptr, int event )
 		case ID_AUTOSWITCH:
 		case ID_LOOKSPEEDX:
 		case ID_LOOKSPEEDY:
+		case ID_PS5MOUSESPEED:
 			if (event == QM_ACTIVATED)
 			{
 				s_controls.changesmade = qtrue;
@@ -1586,6 +1622,16 @@ static void Controls_MenuInit( void )
 	s_controls.lookspeedy.maxvalue		     = PS5_M_MAX_STEPS;
 	s_controls.lookspeedy.generic.statusbar  = Controls_StatusBar;
 
+	s_controls.mousespeed.generic.type	     = MTYPE_SLIDER;
+	s_controls.mousespeed.generic.x		     = SCREEN_WIDTH/2;
+	s_controls.mousespeed.generic.flags	     = QMF_SMALLFONT;
+	s_controls.mousespeed.generic.name	     = "mouse speed";
+	s_controls.mousespeed.generic.id 	     = ID_PS5MOUSESPEED;
+	s_controls.mousespeed.generic.callback   = Controls_MenuEvent;
+	s_controls.mousespeed.minvalue		     = 1;
+	s_controls.mousespeed.maxvalue		     = PS5_M_MAX_STEPS;
+	s_controls.mousespeed.generic.statusbar  = Controls_StatusBar;
+
 	s_controls.gesture.generic.type	     = MTYPE_ACTION;
 	s_controls.gesture.generic.flags     = QMF_LEFT_JUSTIFY|QMF_PULSEIFFOCUS|QMF_GRAYED|QMF_HIDDEN;
 	s_controls.gesture.generic.callback  = Controls_ActionEvent;
@@ -1661,6 +1707,7 @@ static void Controls_MenuInit( void )
 
 	Menu_AddItem( &s_controls.menu, &s_controls.lookspeedx );
 	Menu_AddItem( &s_controls.menu, &s_controls.lookspeedy );
+	Menu_AddItem( &s_controls.menu, &s_controls.mousespeed );
 	Menu_AddItem( &s_controls.menu, &s_controls.smoothmouse );
 	Menu_AddItem( &s_controls.menu, &s_controls.invertmouse );
 	Menu_AddItem( &s_controls.menu, &s_controls.lookup );

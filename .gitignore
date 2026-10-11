@@ -3,3 +3,4 @@ dist/
 klog/
 .deps/
 imgui.ini
+.DS_Store
