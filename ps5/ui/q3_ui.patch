@@ -619,6 +619,68 @@
  		case K_JOY1:
  		case K_JOY2:
  		case K_JOY3:
+--- a/code/q3_ui/ui_preferences.c
++++ b/code/q3_ui/ui_preferences.c
+@@ -51,6 +51,7 @@
+ #define ID_DRAWTEAMOVERLAY		136
+ #define ID_ALLOWDOWNLOAD			137
+ #define ID_BACK					138
++#define ID_AUTOSWITCH			139	// PS5
+ 
+ #define	NUM_CROSSHAIRS			10
+ 
+@@ -73,6 +74,7 @@
+ 	menuradiobutton_s	forcemodel;
+ 	menulist_s			drawteamoverlay;
+ 	menuradiobutton_s	allowdownload;
++	menuradiobutton_s	autoswitch;	// PS5: cg_autoswitch, on by default
+ 	menubitmap_s		back;
+ 
+ 	qhandle_t			crosshairShader[NUM_CROSSHAIRS];
+@@ -101,6 +103,7 @@
+ 	s_preferences.forcemodel.curvalue		= trap_Cvar_VariableValue( "cg_forcemodel" ) != 0;
+ 	s_preferences.drawteamoverlay.curvalue	= Com_Clamp( 0, 3, trap_Cvar_VariableValue( "cg_drawTeamOverlay" ) );
+ 	s_preferences.allowdownload.curvalue	= trap_Cvar_VariableValue( "cl_allowDownload" ) != 0;
++	s_preferences.autoswitch.curvalue		= trap_Cvar_VariableValue( "cg_autoswitch" ) != 0;	// PS5
+ }
+ 
+ 
+@@ -158,6 +161,10 @@
+ 		trap_Cvar_SetValue( "sv_allowDownload", s_preferences.allowdownload.curvalue );
+ 		break;
+ 
++	case ID_AUTOSWITCH:	// PS5: a picked-up weapon is drawn at once
++		trap_Cvar_SetValue( "cg_autoswitch", s_preferences.autoswitch.curvalue );
++		break;
++
+ 	case ID_BACK:
+ 		UI_PopMenu();
+ 		break;
+@@ -353,6 +360,16 @@
+ 	s_preferences.allowdownload.generic.x	       = PREFERENCES_X_POS;
+ 	s_preferences.allowdownload.generic.y	       = y;
+ 
++	// PS5: also under Setup, Controls, Weapons; here so it is found with the game's options
++	y += BIGCHAR_HEIGHT+2;
++	s_preferences.autoswitch.generic.type     = MTYPE_RADIOBUTTON;
++	s_preferences.autoswitch.generic.name	  = "Auto Switch Weapons:";
++	s_preferences.autoswitch.generic.flags	  = QMF_PULSEIFFOCUS|QMF_SMALLFONT;
++	s_preferences.autoswitch.generic.callback = Preferences_Event;
++	s_preferences.autoswitch.generic.id       = ID_AUTOSWITCH;
++	s_preferences.autoswitch.generic.x	      = PREFERENCES_X_POS;
++	s_preferences.autoswitch.generic.y	      = y;
++
+ 	s_preferences.back.generic.type	    = MTYPE_BITMAP;
+ 	s_preferences.back.generic.name     = ART_BACK0;
+ 	s_preferences.back.generic.flags    = QMF_LEFT_JUSTIFY|QMF_PULSEIFFOCUS;
+@@ -379,6 +396,7 @@
+ 	Menu_AddItem( &s_preferences.menu, &s_preferences.forcemodel );
+ 	Menu_AddItem( &s_preferences.menu, &s_preferences.drawteamoverlay );
+ 	Menu_AddItem( &s_preferences.menu, &s_preferences.allowdownload );
++	Menu_AddItem( &s_preferences.menu, &s_preferences.autoswitch );
+ 
+ 	Menu_AddItem( &s_preferences.menu, &s_preferences.back );
+ 
 --- a/code/q3_ui/ui_video.c
 +++ b/code/q3_ui/ui_video.c
 @@ -248,6 +248,7 @@

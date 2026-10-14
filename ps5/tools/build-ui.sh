@@ -6,7 +6,8 @@
 #
 # The stock ui.qvm (pak8.pk3) lists 4:3 modes from 1999 and has no FPS switch.
 # ioquake3's lists what the engine's r_availableModes names (ps5/q3/ps5_glimp.c:
-# the console's three display modes); ps5/ui/ui_video.c adds "Show FPS" to it, and
+# the console's three display modes); ps5/ui/ui_video.c adds "Show FPS" to it,
+# ps5/ui/ui_preferences.c adds "Auto Switch Weapons" to Game Options, and
 # ps5/ui/ui_mfield.c opens the console's on-screen keyboard from a text field
 # (ps5/ui/q3_ui.patch is the change against the pinned ioquake3). A pure server's
 # own ui.qvm takes over while connected to it.

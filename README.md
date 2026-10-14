@@ -42,7 +42,7 @@ You need a PS5 that already runs homebrew: an enabler such as etaHEN,
 ShadowMountPlus (it shows titles in `/data/homebrew` on the home screen) and an FTP
 server (ftpsrv, port 2121). Setting that up is not covered here.
 
-1. **Get the title.** Download `Quake3-PS5-v1.1.0.zip` from the
+1. **Get the title.** Download `Quake3-PS5-v1.2.0.zip` from the
    [latest release](https://github.com/griches/PS5_Quake3e/releases/latest) and
    unzip it. It holds one folder, `PPSA99303`.
 2. **Get the game data** (not included, see the table below): `pak0.pk3` from your
@@ -137,7 +137,8 @@ calls for the link.
 The menus are a second build: ioquake3's `q3_ui` from the `vendor/ioq3` submodule
 (pinned at `83a7762`), copied to `build/ui-src/` with the files in `ps5/ui/` over the
 copy (`ps5/ui/q3_ui.patch` is the difference), compiled to a QVM and packed as `baseq3/zz-ps5-ui.pk3`. The changes: the graphics menu lists the
-console's display modes and has a Show FPS switch, the controls menu shows and binds
+console's display modes and has a Show FPS switch, Game Options has an Auto Switch Weapons
+switch (`cg_autoswitch`, on by default), the controls menu shows and binds
 the DualSense's buttons beside a mouse's and a keyboard's and has the two look sensitivities, text fields open the
 on-screen keyboard, there is no CD key prompt at start-up, and the credits describe
 this build.
@@ -150,7 +151,7 @@ The stack builds on Linux. On macOS this repository drives a Lima VM:
 git submodule update --init   # Quake3e and ioquake3, at their pinned revisions
 ps5/tools/vm.sh build      # the title: dist/PPSA99303/
 ps5/tools/vm.sh build-ui   # the menus: dist/PPSA99303/baseq3/zz-ps5-ui.pk3
-ps5/tools/vm.sh package-release 1.1.0   # dist/Quake3-PS5-v1.1.0.zip, from a clean commit
+ps5/tools/vm.sh package-release 1.2.0   # dist/Quake3-PS5-v1.2.0.zip, from a clean commit
 ps5/tools/vm.sh deploy     # FTP to the console (needs the stack's control payload)
 ps5/tools/vm.sh run        # launch and follow the console's log
 ```
