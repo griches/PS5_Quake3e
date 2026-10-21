@@ -495,6 +495,120 @@ static void CL_ForceFixedDlights( void ) {
 
 /*
 ====================
+CL_RegisterCgameCvar
+
+PS5: split screen. The camera's cgame (CL_CameraPlayer) reads its own copies
+of some of the game's settings, so it looks on from behind and draws no status
+bar, whatever the players' are; the copies can be changed at the console.
+====================
+*/
+static void CL_RegisterCgameCvar( vmCvar_t *vmCvar, const char *varName, const char *defaultValue, int flags ) {
+	static const struct {
+		const char *name, *cameraName, *value;
+	} cameraCvars[] = {
+		{ "cg_thirdPerson", "cl_cameraThirdPerson", "1" },
+		{ "cg_thirdPersonRange", "cl_cameraRange", "100" },
+		{ "cg_thirdPersonAngle", "cl_cameraAngle", "0" },
+		{ "cg_draw2D", "cl_cameraDraw2D", "0" },
+	};
+	int i;
+
+	if ( cl_localPlayer == CL_CameraPlayer() ) {
+		for ( i = 0; i < ARRAY_LEN( cameraCvars ); i++ ) {
+			if ( !Q_stricmp( varName, cameraCvars[i].name ) ) {
+				Cvar_Register( vmCvar, cameraCvars[i].cameraName, cameraCvars[i].value, 0, cgvm->privateFlag );
+				return;
+			}
+		}
+	}
+
+	Cvar_Register( vmCvar, varName, defaultValue, flags, cgvm->privateFlag );
+}
+
+
+/*
+====================
+CL_SplitPicture
+
+PS5: split screen. The cgame draws its 640x480 screen stretched to the
+player's part of the screen. A part taller than 4:3 (two players side by
+side) would make every picture and letter tall, so each is drawn its own
+shape instead: the top and bottom thirds of the screen stay at the top and
+bottom of the part and the middle third spreads over the rest, and a picture
+taller than a seventh of the screen covers the same rows as before (the
+whole screen's, the scoreboard's bands). In a wider part (a quarter) only the
+crosshair, which is round, is drawn its own shape. In pixels within the part;
+shader 0 for a model drawn as a picture (a head, an icon).
+====================
+*/
+#define MAX_CROSSHAIRS 16
+static qhandle_t cl_crosshairs[ MAX_CROSSHAIRS ];	// the crosshairs' shaders, as the cgames registered them
+static int cl_numCrosshairs;
+
+static float CL_SplitRow( float row, int height, float scale ) {
+	if ( row <= 160.0f ) {
+		return row * scale;
+	}
+	if ( row >= 320.0f ) {
+		return height - ( 480.0f - row ) * scale;
+	}
+	return 160.0f * scale + ( row - 160.0f ) * ( height - 320.0f * scale ) / 160.0f;
+}
+
+static void CL_SplitPicture( float *x, float *y, float *w, float *h, qhandle_t shader ) {
+	float scale, rowScale, top, bottom, size;
+	int vx, vy, width, height, i;
+
+	if ( CL_SplitViews() <= 1 ) {
+		return;
+	}
+	CL_PlayerView( cl_localPlayer, &vx, &vy, &width, &height );
+	scale = width / 640.0f;
+	rowScale = height / 480.0f;
+
+	if ( rowScale > scale * 1.01f ) {
+		top = *y / rowScale;
+		bottom = ( *y + *h ) / rowScale;
+		if ( bottom - top > 480.0f / 7.0f ) {
+			*y = CL_SplitRow( top, height, scale );
+			*h = CL_SplitRow( bottom, height, scale ) - *y;
+		} else {
+			size = ( bottom - top ) * scale;
+			*y = CL_SplitRow( ( top + bottom ) * 0.5f, height, scale ) - size * 0.5f;
+			*h = size;
+		}
+		return;
+	}
+
+	for ( i = 0; shader && i < cl_numCrosshairs; i++ ) {
+		if ( shader == cl_crosshairs[i] ) {
+			size = MIN( *w, *h );
+			*x += ( *w - size ) * 0.5f;
+			*y += ( *h - size ) * 0.5f;
+			*w = *h = size;
+			return;
+		}
+	}
+}
+
+
+// a shader the cgame registers: the crosshairs are kept (CL_SplitPicture)
+static qhandle_t CL_SplitShader( const char *name, qhandle_t shader ) {
+	int i;
+
+	if ( shader && !Q_stricmpn( name, "gfx/2d/crosshair", 16 ) ) {
+		for ( i = 0; i < cl_numCrosshairs && cl_crosshairs[i] != shader; i++ )
+			;
+		if ( i == cl_numCrosshairs && cl_numCrosshairs < MAX_CROSSHAIRS ) {
+			cl_crosshairs[ cl_numCrosshairs++ ] = shader;
+		}
+	}
+	return shader;
+}
+
+
+/*
+====================
 CL_CgameSystemCalls
 
 The cgame module is making a system call
@@ -516,7 +630,7 @@ static intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 	case CG_MILLISECONDS:
 		return Sys_Milliseconds();
 	case CG_CVAR_REGISTER:
-		Cvar_Register( VMA(1), VMA(2), VMA(3), args[4], cgvm->privateFlag );
+		CL_RegisterCgameCvar( VMA(1), VMA(2), VMA(3), args[4] );
 		return 0;
 	case CG_CVAR_UPDATE:
 		Cvar_Update( VMA(1), cgvm->privateFlag );
@@ -613,7 +727,10 @@ static intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 		S_StartSound( VMA(1), args[2], args[3], args[4] );
 		return 0;
 	case CG_S_STARTLOCALSOUND:
-		S_StartLocalSound( args[1], args[2] );
+		// PS5: split screen, the camera's are the followed player's (rewards, hits): not ours
+		if ( cl_localPlayer != CL_CameraPlayer() ) {
+			S_StartLocalSound( args[1], args[2] );
+		}
 		return 0;
 	case CG_S_CLEARLOOPINGSOUNDS:
 		// PS5: split screen, player 1's cgame clears them for the frame, and
@@ -635,7 +752,10 @@ static intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 		S_UpdateEntityPosition( args[1], VMA(2) );
 		return 0;
 	case CG_S_RESPATIALIZE:
-		S_Respatialize( args[1], VMA(2), VMA(3), args[4] );
+		// PS5: split screen, the players hear the game; the camera only looks
+		if ( cl_localPlayer != CL_CameraPlayer() ) {
+			S_Respatialize( args[1], VMA(2), VMA(3), args[4] );
+		}
 		return 0;
 	case CG_S_REGISTERSOUND:
 		return S_RegisterSound( VMA(1), args[2] );
@@ -654,9 +774,9 @@ static intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 	case CG_R_REGISTERSKIN:
 		return re.RegisterSkin( VMA(1) );
 	case CG_R_REGISTERSHADER:
-		return re.RegisterShader( VMA(1) );
+		return CL_SplitShader( VMA(1), re.RegisterShader( VMA(1) ) ); // PS5: split screen
 	case CG_R_REGISTERSHADERNOMIP:
-		return re.RegisterShaderNoMip( VMA(1) );
+		return CL_SplitShader( VMA(1), re.RegisterShaderNoMip( VMA(1) ) );
 	case CG_R_REGISTERFONT:
 		re.RegisterFont( VMA(1), args[2], VMA(3));
 		return 0;
@@ -682,9 +802,18 @@ static intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 		return 0;
 	case CG_R_RENDERSCENE:
 		CL_PlayerView( cl_localPlayer, &x, &y, &width, &height );
-		if ( x || y ) {
-			// PS5: split screen, into the player's part of the screen
+		if ( CL_SplitViews() > 1 ) {
+			// PS5: split screen, into the player's part of the screen, and a model
+			// drawn as a picture its own shape
 			refdef_t refdef = *(const refdef_t *)VMA(1);
+			if ( refdef.rdflags & RDF_NOWORLDMODEL ) {
+				float rx = refdef.x, ry = refdef.y, rw = refdef.width, rh = refdef.height;
+				CL_SplitPicture( &rx, &ry, &rw, &rh, 0 );
+				refdef.x = rx;
+				refdef.y = ry;
+				refdef.width = rw;
+				refdef.height = rh;
+			}
 			refdef.x += x;
 			refdef.y += y;
 			re.RenderScene( &refdef );
@@ -695,10 +824,14 @@ static intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 	case CG_R_SETCOLOR:
 		re.SetColor( VMA(1) );
 		return 0;
-	case CG_R_DRAWSTRETCHPIC:
-		CL_PlayerView( cl_localPlayer, &x, &y, &width, &height ); // PS5: split screen
-		re.DrawStretchPic( VMF(1) + x, VMF(2) + y, VMF(3), VMF(4), VMF(5), VMF(6), VMF(7), VMF(8), args[9] );
+	case CG_R_DRAWSTRETCHPIC: {
+		// PS5: split screen, into the player's part of the screen, its own shape
+		float px = VMF(1), py = VMF(2), pw = VMF(3), ph = VMF(4);
+		CL_PlayerView( cl_localPlayer, &x, &y, &width, &height );
+		CL_SplitPicture( &px, &py, &pw, &ph, args[9] );
+		re.DrawStretchPic( px + x, py + y, pw, ph, VMF(5), VMF(6), VMF(7), VMF(8), args[9] );
 		return 0;
+	}
 	case CG_R_MODELBOUNDS:
 		re.ModelBounds( args[1], VMA(2), VMA(3) );
 		return 0;
@@ -929,6 +1062,10 @@ void CL_InitCGame( void ) {
 			interpret = VMI_COMPILED;
 	}
 
+	if ( cl_localPlayer == 0 ) {
+		cl_numCrosshairs = 0; // PS5: split screen, the renderer's shaders are new
+	}
+
 	// PS5: split screen, each local player's cgame is a VM of its own
 	cgvm = VM_Create( cl_localPlayer ? VM_CGAME_SPLIT + cl_localPlayer - 1 : VM_CGAME, CL_CgameSystemCalls, CL_DllSyscall, interpret );
 	if ( !cgvm ) {
@@ -1102,7 +1239,8 @@ static void CL_FirstSnapshot( void ) {
 		const char *team = Cvar_VariableString( va( "cl_splitTeam%i", cl_localPlayer + 1 ) );
 		cl.serverTimeDelta = cl.snap.serverTime - cls.realtime;
 		cl.oldServerTime = cl.snap.serverTime;
-		if ( !cl_lp->teamSent && *team && atoi( Info_ValueForKey( info, "g_gametype" ) ) >= GT_TEAM ) {
+		if ( !cl_lp->teamSent && *team && atoi( Info_ValueForKey( info, "g_gametype" ) ) >= GT_TEAM
+			&& cl_localPlayer != CL_CameraPlayer() ) {
 			CL_AddReliableCommand( va( "team %s", team ), qfalse );
 		}
 		cl_lp->teamSent = qtrue;

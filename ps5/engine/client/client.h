@@ -382,6 +382,7 @@ typedef struct {
 	qboolean			loadPending;	// the gamestate came, to load once player 1 has
 	qboolean			teamSent;		// cl_splitTeam<n> went to the server
 	qboolean			dropped;		// the server let this player go: out until the next map
+	int					cameraCut;		// the camera's: cls.realtime of its next cut, 0 before the first
 	char				userinfo[MAX_INFO_STRING];	// as last sent (players 2 and on)
 } localPlayer_t;
 
@@ -398,6 +399,7 @@ connstate_t CL_PlayerState( int player );
 int		CL_SplitViews( void );				// the parts of the screen: 1 without split screen
 void	CL_PlayerView( int player, int *x, int *y, int *width, int *height );
 qboolean CL_PlayerPlaying( int player );	// in a part of the screen, and in the game
+int		CL_CameraPlayer( void );			// the local player who is the camera, or -1
 
 #ifdef USE_CURL
 

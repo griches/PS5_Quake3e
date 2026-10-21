@@ -106,6 +106,8 @@ extern const char* punkbuster_items[];
 static void UI_ServerOptionsMenu( qboolean multiplayer );
 static void ServerOptions_InitLocalPlayers( void );
 static void ServerOptions_InitBotNames( void );
+static void ServerOptions_SetCamera( void );
+static void ServerOptions_StatusBar( void* ptr );
 
 
 /*
@@ -642,6 +644,7 @@ SERVER OPTIONS MENU *****
 #define ID_GO					23
 #define ID_BACK					24
 #define ID_SPLITPLAYERS			25	// PS5
+#define ID_SPLITCAMERA			26	// PS5
 
 #define PLAYER_SLOTS			12
 
@@ -665,6 +668,7 @@ typedef struct {
 
 	menutext_s			player0;
 	menulist_s			splitPlayersList;	// PS5: split screen, the players on the console
+	menuradiobutton_s	splitCamera;		// PS5: split screen, a camera beside them (not with four)
 	menutext_s			localPlayer[SPLIT_PLAYERS_MAX];	// PS5: split screen, "Player 2" and on
 	char				localPlayerLabels[SPLIT_PLAYERS_MAX][16];
 	menulist_s			playerType[PLAYER_SLOTS];
@@ -815,11 +819,18 @@ static void ServerOptions_Start( void ) {
 		break;
 	}
 
+	// PS5: split screen, the camera is a client too
+	if( s_serveroptions.splitPlayers > 1 && s_serveroptions.splitPlayers < SPLIT_PLAYERS_MAX && s_serveroptions.splitCamera.curvalue ) {
+		maxclients++;
+	}
+
 	trap_Cvar_SetValue( "sv_maxclients", Com_Clamp( 0, 12, maxclients ) );
 
 	// PS5: split screen, the players on the console after the first join beside them,
-	// each on the team their slot has
+	// each on the team their slot has, and the camera if it was chosen
 	trap_Cvar_SetValue( "cl_splitPlayers", s_serveroptions.splitPlayers > 1 ? s_serveroptions.splitPlayers : 1 );
+	trap_Cvar_SetValue( "cl_splitCamera", s_serveroptions.splitPlayers > 1 && s_serveroptions.splitPlayers < SPLIT_PLAYERS_MAX
+		&& s_serveroptions.splitCamera.curvalue );
 	for( n = 1; n < s_serveroptions.splitPlayers; n++ ) {
 		trap_Cvar_Set( va( "cl_splitTeam%i", n + 1 ), s_serveroptions.gametype >= GT_TEAM ?
 			playerTeam_list[s_serveroptions.playerTeam[n].curvalue] : "" );
@@ -942,7 +953,7 @@ static void ServerOptions_SetPlayerItems( void ) {
 
 	// names
 	if( s_serveroptions.dedicated.curvalue == 0 ) {
-		s_serveroptions.player0.string = s_serveroptions.splitPlayers > 1 ? "Player 1" : "Human";
+		s_serveroptions.player0.string = s_serveroptions.splitPlayers > 1 ? "Player 1:" : "Human";
 		s_serveroptions.playerName[0].generic.flags &= ~QMF_HIDDEN;
 
 		start = 1;
@@ -1009,6 +1020,7 @@ static void ServerOptions_Event( void* ptr, int event ) {
 			break;
 		}
 		s_serveroptions.splitPlayers = s_serveroptions.splitPlayersList.curvalue + 2;
+		ServerOptions_SetCamera();
 		ServerOptions_InitPlayerItems();
 		ServerOptions_SetPlayerItems();
 		ServerOptions_InitBotNames();
@@ -1056,6 +1068,10 @@ ServerOptions_StatusBar
 */
 static void ServerOptions_StatusBar( void* ptr ) {
 	switch( ((menucommon_s*)ptr)->id ) {
+	case ID_SPLITCAMERA:
+		// PS5: split screen
+		UI_DrawString( 320, 440, "A view that follows the players", UI_CENTER|UI_SMALLFONT, colorWhite );
+		break;
 	default:
 		UI_DrawString( 320, 440, "0 = NO LIMIT", UI_CENTER|UI_SMALLFONT, colorWhite );
 		break;
@@ -1189,6 +1205,25 @@ static void ServerOptions_InitBotNames( void ) {
 		if( s_serveroptions.playerType[count].curvalue == 1 ) {
 			s_serveroptions.playerType[count].curvalue = 2;
 		}
+	}
+}
+
+
+/*
+=================
+ServerOptions_SetCamera
+
+PS5: split screen. The camera takes a part of the screen of its own, so four
+players leave it no room.
+=================
+*/
+static void ServerOptions_SetCamera( void ) {
+	if( s_serveroptions.splitPlayers >= SPLIT_PLAYERS_MAX ) {
+		s_serveroptions.splitCamera.curvalue = 0;
+		s_serveroptions.splitCamera.generic.flags |= QMF_GRAYED;
+	}
+	else {
+		s_serveroptions.splitCamera.generic.flags &= ~QMF_GRAYED;
 	}
 }
 
@@ -1393,6 +1428,16 @@ static void ServerOptions_MenuInit( qboolean multiplayer ) {
 		s_serveroptions.splitPlayersList.itemnames			= splitPlayers_list;
 		s_serveroptions.splitPlayersList.curvalue			= s_serveroptions.splitPlayers - 2;
 		y += BIGCHAR_HEIGHT+2;
+
+		s_serveroptions.splitCamera.generic.type			= MTYPE_RADIOBUTTON;
+		s_serveroptions.splitCamera.generic.name			= "Camera:";
+		s_serveroptions.splitCamera.generic.flags			= QMF_PULSEIFFOCUS|QMF_SMALLFONT;
+		s_serveroptions.splitCamera.generic.id				= ID_SPLITCAMERA;
+		s_serveroptions.splitCamera.generic.statusbar		= ServerOptions_StatusBar;
+		s_serveroptions.splitCamera.generic.x				= OPTIONS_X;
+		s_serveroptions.splitCamera.generic.y				= y;
+		ServerOptions_SetCamera();
+		y += BIGCHAR_HEIGHT+2;
 	}
 	if( s_serveroptions.gametype != GT_CTF ) {
 		s_serveroptions.fraglimit.generic.type       = MTYPE_FIELD;
@@ -1485,7 +1530,8 @@ static void ServerOptions_MenuInit( qboolean multiplayer ) {
 	y += ( 2 * SMALLCHAR_HEIGHT );
 	s_serveroptions.player0.generic.type			= MTYPE_TEXT;
 	s_serveroptions.player0.generic.flags			= QMF_SMALLFONT;
-	s_serveroptions.player0.generic.x				= 32 + SMALLCHAR_WIDTH;
+	// PS5: split screen, "Player 1: name": the labels a letter left, the names a letter right
+	s_serveroptions.player0.generic.x				= s_serveroptions.splitPlayers > 1 ? 32 : 32 + SMALLCHAR_WIDTH;
 	s_serveroptions.player0.generic.y				= y;
 	s_serveroptions.player0.color					= color_orange;
 	s_serveroptions.player0.style					= UI_LEFT|UI_SMALLFONT;
@@ -1501,7 +1547,7 @@ static void ServerOptions_MenuInit( qboolean multiplayer ) {
 
 		s_serveroptions.playerName[n].generic.type		= MTYPE_TEXT;
 		s_serveroptions.playerName[n].generic.flags		= QMF_SMALLFONT;
-		s_serveroptions.playerName[n].generic.x			= 96;
+		s_serveroptions.playerName[n].generic.x			= s_serveroptions.splitPlayers > 1 ? 96 + SMALLCHAR_WIDTH : 96;
 		s_serveroptions.playerName[n].generic.y			= y;
 		s_serveroptions.playerName[n].generic.callback	= ServerOptions_PlayerNameEvent;
 		s_serveroptions.playerName[n].generic.id		= n;
@@ -1523,10 +1569,10 @@ static void ServerOptions_MenuInit( qboolean multiplayer ) {
 		// PS5: split screen, the other players on the console are named as player 1 is
 		// (ServerOptions_InitLocalPlayers shows these in place of the slots' types)
 		if( n > 0 && n < SPLIT_PLAYERS_MAX ) {
-			Com_sprintf( s_serveroptions.localPlayerLabels[n], sizeof( s_serveroptions.localPlayerLabels[n] ), "Player %i", n + 1 );
+			Com_sprintf( s_serveroptions.localPlayerLabels[n], sizeof( s_serveroptions.localPlayerLabels[n] ), "Player %i:", n + 1 );
 			s_serveroptions.localPlayer[n].generic.type		= MTYPE_TEXT;
 			s_serveroptions.localPlayer[n].generic.flags	= QMF_SMALLFONT|QMF_HIDDEN;
-			s_serveroptions.localPlayer[n].generic.x		= 32 + SMALLCHAR_WIDTH;
+			s_serveroptions.localPlayer[n].generic.x		= 32;
 			s_serveroptions.localPlayer[n].generic.y		= y;
 			s_serveroptions.localPlayer[n].color			= color_orange;
 			s_serveroptions.localPlayer[n].style			= UI_LEFT|UI_SMALLFONT;
@@ -1592,6 +1638,7 @@ static void ServerOptions_MenuInit( qboolean multiplayer ) {
 
 	if( s_serveroptions.splitPlayers > 1 ) {
 		Menu_AddItem( &s_serveroptions.menu, &s_serveroptions.splitPlayersList );	// PS5: split screen
+		Menu_AddItem( &s_serveroptions.menu, &s_serveroptions.splitCamera );
 	}
 	if( s_serveroptions.gametype != GT_CTF ) {
 		Menu_AddItem( &s_serveroptions.menu, &s_serveroptions.fraglimit );

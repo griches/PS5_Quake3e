@@ -284,6 +284,7 @@ void UI_MainMenu( void ) {
 	trap_Cvar_Set( "sv_killserver", "1" );
 	// PS5: split screen is for the skirmish that asks for it (UI_SplitScreenMenu)
 	trap_Cvar_Set( "cl_splitPlayers", "1" );
+	trap_Cvar_Set( "cl_splitCamera", "0" );
 
 	// PS5: no CD key prompt at start-up (it only opened the on-screen keyboard, and
 	// Accept dismissed it); the key can still be entered under Setup, CD Key

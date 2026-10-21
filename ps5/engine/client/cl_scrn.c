@@ -557,7 +557,8 @@ static void SCR_DrawPlayerJoining( void ) {
 
 	CL_PlayerView( cl_localPlayer, &x, &y, &width, &height );
 	size = height / 16;
-	SCR_DrawCenteredText( x + width / 2, y + height / 2 - size, size, va( "PLAYER %i", cl_localPlayer + 1 ), g_color_table[ ColorIndex( COLOR_WHITE ) ] );
+	SCR_DrawCenteredText( x + width / 2, y + height / 2 - size, size,
+		cl_localPlayer == CL_CameraPlayer() ? "CAMERA" : va( "PLAYER %i", cl_localPlayer + 1 ), g_color_table[ ColorIndex( COLOR_WHITE ) ] );
 	size /= 3;
 	SCR_DrawCenteredText( x + width / 2, y + height / 2 + size, size, clc.serverMessage[0] ? clc.serverMessage : "Joining...", grey );
 }
@@ -737,13 +738,18 @@ static qboolean SCR_BoardLine( int i, int team, int y, int lineHeight ) {
 	if ( (unsigned)client >= MAX_CLIENTS ) {
 		return qfalse;
 	}
+	// the camera only looks on
+	player = CL_CameraPlayer();
+	if ( player >= 0 && CL_PlayerState( player ) >= CA_PRIMED && cl_localPlayers[ player ].connection.clientNum == client ) {
+		return qfalse;
+	}
 	info = cl.gameState.stringData + cl.gameState.stringOffsets[ CS_PLAYERS + client ];
 	if ( atoi( Info_ValueForKey( info, "t" ) ) != team ) {
 		return qfalse;
 	}
 
 	// the players on the console, each in their own colour, as P1, P2...
-	for ( player = 0; player < CL_SplitViews(); player++ ) {
+	for ( player = 0; player < CL_SplitViews() && player != CL_CameraPlayer(); player++ ) {
 		if ( CL_PlayerState( player ) >= CA_PRIMED && cl_localPlayers[ player ].connection.clientNum == client ) {
 			SCR_BoardFill( SB_SCORELINE_X + BIGCHAR_WIDTH + SB_RATING_WIDTH / 2, y,
 				640 - SB_SCORELINE_X - BIGCHAR_WIDTH, BIGCHAR_HEIGHT + 1, localColors[ player ] );
@@ -865,6 +871,55 @@ static void SCR_DrawSplitScoreboard( int quarter ) {
 
 /*
 ==================
+SCR_DrawCameraName
+
+The camera's part of the screen, with the camera current: whom it follows,
+the name in its colours low in the middle, as a caption.
+==================
+*/
+static void SCR_DrawCameraName( void ) {
+	const float shadow[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+	const char *info, *name, *s;
+	int x, y, width, height, size, pass, xx, ch;
+	vec4_t color;
+	float row, col;
+
+	if ( !( cl.snap.ps.pm_flags & PMF_FOLLOW ) || (unsigned)cl.snap.ps.clientNum >= MAX_CLIENTS ) {
+		return;
+	}
+	info = cl.gameState.stringData + cl.gameState.stringOffsets[ CS_PLAYERS + cl.snap.ps.clientNum ];
+	name = Info_ValueForKey( info, "n" );
+
+	CL_PlayerView( cl_localPlayer, &x, &y, &width, &height );
+	size = height / 24;
+	x += ( width - Q_PrintStrlen( name ) * size ) / 2;
+	y += height - size * 2;
+	for ( pass = 0; pass < 2; pass++ ) {
+		re.SetColor( pass ? g_color_table[ ColorIndex( COLOR_WHITE ) ] : shadow );
+		for ( s = name, xx = x + ( pass ? 0 : size / 8 ); *s; s++ ) {
+			if ( Q_IsColorString( s ) ) {
+				if ( pass ) {
+					Com_Memcpy( color, g_color_table[ ColorIndexFromChar( s[1] ) ], sizeof( color ) );
+					re.SetColor( color );
+				}
+				s++;
+				continue;
+			}
+			ch = *s & 255;
+			if ( ch != ' ' ) {
+				row = ( ch >> 4 ) * 0.0625f;
+				col = ( ch & 15 ) * 0.0625f;
+				re.DrawStretchPic( xx, y + ( pass ? 0 : size / 8 ), size, size, col, row, col + 0.0625f, row + 0.0625f, cls.charSetShader );
+			}
+			xx += size;
+		}
+	}
+	re.SetColor( NULL );
+}
+
+
+/*
+==================
 SCR_DrawPlayerViews
 
 PS5: split screen. Each local player's part of the screen, on black: the gaps
@@ -888,6 +943,9 @@ static void SCR_DrawPlayerViews( stereoFrame_t stereoFrame ) {
 			// the game information screen and loading progress, or the game
 			if ( cgvm ) {
 				CL_CGameRendering( stereoFrame );
+				if ( player == CL_CameraPlayer() ) {
+					SCR_DrawCameraName();
+				}
 				break;
 			}
 			// fall through

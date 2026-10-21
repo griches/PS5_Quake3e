@@ -821,7 +821,7 @@ void CL_PlayerKeyEvent( int player, int key, qboolean down, unsigned time )
 	if ( Key_GetCatcher() || key == K_ESCAPE ) {
 		*state = PLAYER_KEY_SHARED;
 		CL_KeyEvent( key, qtrue, time );
-	} else if ( CL_PlayerPlaying( player ) ) {
+	} else if ( CL_PlayerPlaying( player ) && player != CL_CameraPlayer() ) {
 		*state = PLAYER_KEY_BOUND;
 		CL_PlayerBinding( player, key, qtrue, time );
 	}

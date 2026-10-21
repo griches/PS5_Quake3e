@@ -101,7 +101,9 @@ localPlayer_t		cl_localPlayers[ MAX_LOCAL_PLAYERS ];
 localPlayer_t		*cl_lp = &cl_localPlayers[ 0 ];
 int					cl_localPlayer;
 static int			cl_views = 1;	// the parts of the screen, set as a local map starts (CL_MapLoading)
+static int			cl_camera = -1;	// the local player who is the camera, set with cl_views
 static cvar_t		*cl_splitPlayers;
+static cvar_t		*cl_splitCamera;
 
 netadr_t			rcon_address;
 
@@ -266,6 +268,21 @@ qboolean CL_PlayerPlaying( int player ) {
 
 /*
 =====================
+CL_CameraPlayer
+
+The local player who is the camera (cl_splitCamera): a spectator after the
+players, in a part of the screen of its own, who follows the players in
+the third person with no status bar (CL_CameraDirect, cl_cgame.c). -1 for
+none.
+=====================
+*/
+int CL_CameraPlayer( void ) {
+	return cl_camera < CL_SplitViews() ? cl_camera : -1;
+}
+
+
+/*
+=====================
 CL_PlayerUserinfo
 
 The userinfo a local player sends: player 1's cvars, with cl_splitName<n> and
@@ -283,6 +300,12 @@ static const char *CL_PlayerUserinfo( qboolean *truncated ) {
 
 	Q_strncpyz( info, Cvar_InfoString( CVAR_USERINFO, truncated ), sizeof( info ) );
 	if ( cl_localPlayer == 0 ) {
+		return info;
+	}
+	if ( cl_localPlayer == CL_CameraPlayer() ) {
+		// a willing spectator, never one waiting to play
+		Info_SetValueForKey_s( info, MAX_USERINFO_LENGTH, "name", "Camera" );
+		Info_SetValueForKey_s( info, MAX_USERINFO_LENGTH, "team", "s" );
 		return info;
 	}
 
@@ -338,6 +361,7 @@ static void CL_SplitJoin( int player ) {
 	Com_Memset( &clc, 0, sizeof( clc ) );
 	cl_lp->loadPending = qfalse;
 	cl_lp->teamSent = qfalse;
+	cl_lp->cameraCut = 0;
 	cl_lp->userinfo[0] = '\0';
 
 	NET_StringToAdr( "localhost", &clc.serverAddress, NA_UNSPEC );
@@ -474,6 +498,51 @@ static void CL_InitSplitCGames( void ) {
 	}
 
 	CL_SetLocalPlayer( previous );
+}
+
+
+/*
+=====================
+CL_CameraDirect
+
+The current player, the camera, cuts to another player every ten seconds.
+It starts as a dedicated follower of the leader ("team follow1"), whom a
+tournament never puts in to play; in a tournament it goes on cutting between
+the two players that way (follownext), and in the other games it follows
+each playing client in turn.
+=====================
+*/
+#define CAMERA_CUT_MSEC 10000
+
+static void CL_CameraDirect( void ) {
+	const char *serverInfo, *info;
+	int gametype, client, i;
+
+	if ( cls.state != CA_ACTIVE || ( cl_lp->cameraCut && cl_lp->cameraCut - cls.realtime > 0 ) ) {
+		return;
+	}
+
+	serverInfo = cl.gameState.stringData + cl.gameState.stringOffsets[ CS_SERVERINFO ];
+	gametype = atoi( Info_ValueForKey( serverInfo, "g_gametype" ) );
+	if ( !cl_lp->cameraCut ) {
+		CL_AddReliableCommand( "team follow1", qfalse );
+	} else if ( gametype == GT_TOURNAMENT ) {
+		CL_AddReliableCommand( "follownext", qfalse );
+	} else {
+		// the next playing client after the one followed now
+		client = ( cl.snap.ps.pm_flags & PMF_FOLLOW ) ? cl.snap.ps.clientNum : -1;
+		for ( i = 1; i <= MAX_CLIENTS; i++ ) {
+			const int next = ( client + i + MAX_CLIENTS ) % MAX_CLIENTS;
+			info = cl.gameState.stringData + cl.gameState.stringOffsets[ CS_PLAYERS + next ];
+			if ( *info && atoi( Info_ValueForKey( info, "t" ) ) != TEAM_SPECTATOR ) {
+				if ( next != client ) {
+					CL_AddReliableCommand( va( "follow %i", next ), qfalse );
+				}
+				break;
+			}
+		}
+	}
+	cl_lp->cameraCut = cls.realtime + CAMERA_CUT_MSEC;
 }
 
 
@@ -1552,9 +1621,14 @@ qboolean CL_MapLoading( void ) {
 	}
 
 	// PS5: split screen. A part of the screen for each player cl_splitPlayers asks
-	// for, until the next map; the players after the first join once player 1 has
-	// (CL_SplitSync).
+	// for, and one for the camera after them if cl_splitCamera asks and there is
+	// room, until the next map; the players after the first join once player 1
+	// has (CL_SplitSync).
 	cl_views = cl_splitPlayers->integer;
+	cl_camera = -1;
+	if ( cl_views > 1 && cl_splitCamera->integer && cl_views < MAX_LOCAL_PLAYERS ) {
+		cl_camera = cl_views++;
+	}
 
 	return qtrue;
 }
@@ -3615,6 +3689,10 @@ void CL_Frame( int msec, int realMsec ) {
 
 		// decide on the serverTime to render
 		CL_SetCGameTime();
+
+		if ( i == CL_CameraPlayer() ) {
+			CL_CameraDirect();
+		}
 	}
 	CL_SetLocalPlayer( 0 );
 	CL_SplitScores();
@@ -4534,6 +4612,9 @@ void CL_Init( void ) {
 	cl_splitPlayers = Cvar_Get( "cl_splitPlayers", "1", CVAR_TEMP );
 	Cvar_CheckRange( cl_splitPlayers, "1", XSTRING( MAX_LOCAL_PLAYERS ), CV_INTEGER );
 	Cvar_SetDescription( cl_splitPlayers, "PS5: the players who play on the local server's next map, each in a part of the screen (split screen). The menus set it." );
+	cl_splitCamera = Cvar_Get( "cl_splitCamera", "0", CVAR_TEMP );
+	Cvar_CheckRange( cl_splitCamera, "0", "1", CV_INTEGER );
+	Cvar_SetDescription( cl_splitCamera, "PS5: split screen with a camera beside the players, a spectator who follows them from behind (when there is a part of the screen for it). The menus set it." );
 	for ( i = 2; i <= MAX_LOCAL_PLAYERS; i++ ) {
 		cv = Cvar_Get( va( "cl_splitName%i", i ), "", CVAR_TEMP );
 		Cvar_SetDescription( cv, va( "PS5: player %i's name in split screen (empty: \"Player %i\").", i, i ) );

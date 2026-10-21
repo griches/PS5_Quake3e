@@ -432,7 +432,7 @@ void CL_PlayerMouseEvent( int player, int dx, int dy ) {
 
 	if ( Key_GetCatcher() & KEYCATCH_UI ) {
 		CL_MouseEvent( dx, dy );
-	} else if ( Key_GetCatcher() == 0 && CL_PlayerPlaying( player ) ) {
+	} else if ( Key_GetCatcher() == 0 && CL_PlayerPlaying( player ) && player != CL_CameraPlayer() ) {
 		active = &cl_localPlayers[ player ].active;
 		active->mouseDx[ active->mouseIndex ] += dx;
 		active->mouseDy[ active->mouseIndex ] += dy;
@@ -448,7 +448,7 @@ PS5: split screen. Another local player's joystick (their left stick).
 =================
 */
 void CL_PlayerJoystickEvent( int player, int axis, int value, int time ) {
-	if ( (unsigned)player >= MAX_LOCAL_PLAYERS || axis < 0 || axis >= MAX_JOYSTICK_AXIS ) {
+	if ( (unsigned)player >= MAX_LOCAL_PLAYERS || axis < 0 || axis >= MAX_JOYSTICK_AXIS || player == CL_CameraPlayer() ) {
 		return;
 	}
 

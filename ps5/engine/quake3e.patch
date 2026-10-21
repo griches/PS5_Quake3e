@@ -18,10 +18,11 @@
  }
  
  
-@@ -279,6 +286,15 @@
+@@ -278,6 +285,15 @@
+ 	Cmd_TokenizeString( s );
  	cmd = Cmd_Argv(0);
  	argc = Cmd_Argc();
- 
++
 +	if ( !strcmp( cmd, "disconnect" ) && cl_localPlayer ) {
 +		// PS5: split screen, the server let another local player go: they leave
 +		// after this frame (CL_Frame), and the cgame never sees the command
@@ -30,10 +31,9 @@
 +		Cmd_Clear();
 +		return qfalse;
 +	}
-+
+ 
  	if ( !strcmp( cmd, "disconnect" ) ) {
  		// https://zerowing.idsoftware.com/bugzilla/show_bug.cgi?id=552
- 		// allow server to indicate why they were disconnected
 @@ -386,6 +402,16 @@
  */
  void CL_ShutdownCGame( void ) {
@@ -51,7 +51,133 @@
  	Key_SetCatcher( Key_GetCatcher( ) & ~KEYCATCH_CGAME );
  	cls.cgameStarted = qfalse;
  
-@@ -475,9 +501,14 @@
+@@ -463,21 +489,140 @@
+ 	cv = Cvar_Get( "r_dlightMode", "1", 0 );
+ 	if ( cv ) {
+ 		Cvar_CheckRange( cv, "1", "2", CV_INTEGER );
++	}
++}
++
++
++/*
++====================
++CL_RegisterCgameCvar
++
++PS5: split screen. The camera's cgame (CL_CameraPlayer) reads its own copies
++of some of the game's settings, so it looks on from behind and draws no status
++bar, whatever the players' are; the copies can be changed at the console.
++====================
++*/
++static void CL_RegisterCgameCvar( vmCvar_t *vmCvar, const char *varName, const char *defaultValue, int flags ) {
++	static const struct {
++		const char *name, *cameraName, *value;
++	} cameraCvars[] = {
++		{ "cg_thirdPerson", "cl_cameraThirdPerson", "1" },
++		{ "cg_thirdPersonRange", "cl_cameraRange", "100" },
++		{ "cg_thirdPersonAngle", "cl_cameraAngle", "0" },
++		{ "cg_draw2D", "cl_cameraDraw2D", "0" },
++	};
++	int i;
++
++	if ( cl_localPlayer == CL_CameraPlayer() ) {
++		for ( i = 0; i < ARRAY_LEN( cameraCvars ); i++ ) {
++			if ( !Q_stricmp( varName, cameraCvars[i].name ) ) {
++				Cvar_Register( vmCvar, cameraCvars[i].cameraName, cameraCvars[i].value, 0, cgvm->privateFlag );
++				return;
++			}
++		}
+ 	}
++
++	Cvar_Register( vmCvar, varName, defaultValue, flags, cgvm->privateFlag );
+ }
+ 
+ 
+ /*
++====================
++CL_SplitPicture
++
++PS5: split screen. The cgame draws its 640x480 screen stretched to the
++player's part of the screen. A part taller than 4:3 (two players side by
++side) would make every picture and letter tall, so each is drawn its own
++shape instead: the top and bottom thirds of the screen stay at the top and
++bottom of the part and the middle third spreads over the rest, and a picture
++taller than a seventh of the screen covers the same rows as before (the
++whole screen's, the scoreboard's bands). In a wider part (a quarter) only the
++crosshair, which is round, is drawn its own shape. In pixels within the part;
++shader 0 for a model drawn as a picture (a head, an icon).
+ ====================
++*/
++#define MAX_CROSSHAIRS 16
++static qhandle_t cl_crosshairs[ MAX_CROSSHAIRS ];	// the crosshairs' shaders, as the cgames registered them
++static int cl_numCrosshairs;
++
++static float CL_SplitRow( float row, int height, float scale ) {
++	if ( row <= 160.0f ) {
++		return row * scale;
++	}
++	if ( row >= 320.0f ) {
++		return height - ( 480.0f - row ) * scale;
++	}
++	return 160.0f * scale + ( row - 160.0f ) * ( height - 320.0f * scale ) / 160.0f;
++}
++
++static void CL_SplitPicture( float *x, float *y, float *w, float *h, qhandle_t shader ) {
++	float scale, rowScale, top, bottom, size;
++	int vx, vy, width, height, i;
++
++	if ( CL_SplitViews() <= 1 ) {
++		return;
++	}
++	CL_PlayerView( cl_localPlayer, &vx, &vy, &width, &height );
++	scale = width / 640.0f;
++	rowScale = height / 480.0f;
++
++	if ( rowScale > scale * 1.01f ) {
++		top = *y / rowScale;
++		bottom = ( *y + *h ) / rowScale;
++		if ( bottom - top > 480.0f / 7.0f ) {
++			*y = CL_SplitRow( top, height, scale );
++			*h = CL_SplitRow( bottom, height, scale ) - *y;
++		} else {
++			size = ( bottom - top ) * scale;
++			*y = CL_SplitRow( ( top + bottom ) * 0.5f, height, scale ) - size * 0.5f;
++			*h = size;
++		}
++		return;
++	}
++
++	for ( i = 0; shader && i < cl_numCrosshairs; i++ ) {
++		if ( shader == cl_crosshairs[i] ) {
++			size = MIN( *w, *h );
++			*x += ( *w - size ) * 0.5f;
++			*y += ( *h - size ) * 0.5f;
++			*w = *h = size;
++			return;
++		}
++	}
++}
++
++
++// a shader the cgame registers: the crosshairs are kept (CL_SplitPicture)
++static qhandle_t CL_SplitShader( const char *name, qhandle_t shader ) {
++	int i;
++
++	if ( shader && !Q_stricmpn( name, "gfx/2d/crosshair", 16 ) ) {
++		for ( i = 0; i < cl_numCrosshairs && cl_crosshairs[i] != shader; i++ )
++			;
++		if ( i == cl_numCrosshairs && cl_numCrosshairs < MAX_CROSSHAIRS ) {
++			cl_crosshairs[ cl_numCrosshairs++ ] = shader;
++		}
++	}
++	return shader;
++}
++
++
++/*
++====================
+ CL_CgameSystemCalls
+ 
+ The cgame module is making a system call
  ====================
  */
  static intptr_t CL_CgameSystemCalls( intptr_t *args ) {
@@ -67,8 +193,24 @@
  		return 0;
  	case CG_ERROR:
  		Com_Error( ERR_DROP, "%s", (const char*)VMA(1) );
-@@ -585,7 +616,11 @@
- 		S_StartLocalSound( args[1], args[2] );
+@@ -485,7 +630,7 @@
+ 	case CG_MILLISECONDS:
+ 		return Sys_Milliseconds();
+ 	case CG_CVAR_REGISTER:
+-		Cvar_Register( VMA(1), VMA(2), VMA(3), args[4], cgvm->privateFlag );
++		CL_RegisterCgameCvar( VMA(1), VMA(2), VMA(3), args[4] );
+ 		return 0;
+ 	case CG_CVAR_UPDATE:
+ 		Cvar_Update( VMA(1), cgvm->privateFlag );
+@@ -582,10 +727,17 @@
+ 		S_StartSound( VMA(1), args[2], args[3], args[4] );
+ 		return 0;
+ 	case CG_S_STARTLOCALSOUND:
+-		S_StartLocalSound( args[1], args[2] );
++		// PS5: split screen, the camera's are the followed player's (rewards, hits): not ours
++		if ( cl_localPlayer != CL_CameraPlayer() ) {
++			S_StartLocalSound( args[1], args[2] );
++		}
  		return 0;
  	case CG_S_CLEARLOOPINGSOUNDS:
 -		S_ClearLoopingSounds(args[1]);
@@ -80,7 +222,16 @@
  		return 0;
  	case CG_S_ADDLOOPINGSOUND:
  		S_AddLoopingSound( args[1], VMA(2), VMA(3), args[4] );
-@@ -605,10 +640,14 @@
+@@ -600,24 +752,31 @@
+ 		S_UpdateEntityPosition( args[1], VMA(2) );
+ 		return 0;
+ 	case CG_S_RESPATIALIZE:
+-		S_Respatialize( args[1], VMA(2), VMA(3), args[4] );
++		// PS5: split screen, the players hear the game; the camera only looks
++		if ( cl_localPlayer != CL_CameraPlayer() ) {
++			S_Respatialize( args[1], VMA(2), VMA(3), args[4] );
++		}
+ 		return 0;
  	case CG_S_REGISTERSOUND:
  		return S_RegisterSound( VMA(1), args[2] );
  	case CG_S_STARTBACKGROUNDTRACK:
@@ -97,15 +248,35 @@
  		return 0;
  	case CG_R_REGISTERMODEL:
  		return re.RegisterModel( VMA(1) );
-@@ -642,13 +681,23 @@
+ 	case CG_R_REGISTERSKIN:
+ 		return re.RegisterSkin( VMA(1) );
+ 	case CG_R_REGISTERSHADER:
+-		return re.RegisterShader( VMA(1) );
++		return CL_SplitShader( VMA(1), re.RegisterShader( VMA(1) ) ); // PS5: split screen
+ 	case CG_R_REGISTERSHADERNOMIP:
+-		return re.RegisterShaderNoMip( VMA(1) );
++		return CL_SplitShader( VMA(1), re.RegisterShaderNoMip( VMA(1) ) );
+ 	case CG_R_REGISTERFONT:
+ 		re.RegisterFont( VMA(1), args[2], VMA(3));
+ 		return 0;
+@@ -642,14 +801,37 @@
  		re.AddAdditiveLightToScene( VMA(1), VMF(2), VMF(3), VMF(4), VMF(5) );
  		return 0;
  	case CG_R_RENDERSCENE:
 -		re.RenderScene( VMA(1) );
 +		CL_PlayerView( cl_localPlayer, &x, &y, &width, &height );
-+		if ( x || y ) {
-+			// PS5: split screen, into the player's part of the screen
++		if ( CL_SplitViews() > 1 ) {
++			// PS5: split screen, into the player's part of the screen, and a model
++			// drawn as a picture its own shape
 +			refdef_t refdef = *(const refdef_t *)VMA(1);
++			if ( refdef.rdflags & RDF_NOWORLDMODEL ) {
++				float rx = refdef.x, ry = refdef.y, rw = refdef.width, rh = refdef.height;
++				CL_SplitPicture( &rx, &ry, &rw, &rh, 0 );
++				refdef.x = rx;
++				refdef.y = ry;
++				refdef.width = rw;
++				refdef.height = rh;
++			}
 +			refdef.x += x;
 +			refdef.y += y;
 +			re.RenderScene( &refdef );
@@ -116,14 +287,20 @@
  	case CG_R_SETCOLOR:
  		re.SetColor( VMA(1) );
  		return 0;
- 	case CG_R_DRAWSTRETCHPIC:
+-	case CG_R_DRAWSTRETCHPIC:
 -		re.DrawStretchPic( VMF(1), VMF(2), VMF(3), VMF(4), VMF(5), VMF(6), VMF(7), VMF(8), args[9] );
-+		CL_PlayerView( cl_localPlayer, &x, &y, &width, &height ); // PS5: split screen
-+		re.DrawStretchPic( VMF(1) + x, VMF(2) + y, VMF(3), VMF(4), VMF(5), VMF(6), VMF(7), VMF(8), args[9] );
++	case CG_R_DRAWSTRETCHPIC: {
++		// PS5: split screen, into the player's part of the screen, its own shape
++		float px = VMF(1), py = VMF(2), pw = VMF(3), ph = VMF(4);
++		CL_PlayerView( cl_localPlayer, &x, &y, &width, &height );
++		CL_SplitPicture( &px, &py, &pw, &ph, args[9] );
++		re.DrawStretchPic( px + x, py + y, pw, ph, VMF(5), VMF(6), VMF(7), VMF(8), args[9] );
  		return 0;
++	}
  	case CG_R_MODELBOUNDS:
  		re.ModelBounds( args[1], VMA(2), VMA(3) );
-@@ -735,7 +784,9 @@
+ 		return 0;
+@@ -735,7 +917,9 @@
  		return botlib_export->PC_SourceFileAndLine( args[1], VMA(2), VMA(3) );
  
  	case CG_S_STOPBACKGROUNDTRACK:
@@ -134,17 +311,21 @@
  		return 0;
  
  	case CG_REAL_TIME:
-@@ -878,7 +929,8 @@
+@@ -878,7 +1062,12 @@
  			interpret = VMI_COMPILED;
  	}
  
 -	cgvm = VM_Create( VM_CGAME, CL_CgameSystemCalls, CL_DllSyscall, interpret );
++	if ( cl_localPlayer == 0 ) {
++		cl_numCrosshairs = 0; // PS5: split screen, the renderer's shaders are new
++	}
++
 +	// PS5: split screen, each local player's cgame is a VM of its own
 +	cgvm = VM_Create( cl_localPlayer ? VM_CGAME_SPLIT + cl_localPlayer - 1 : VM_CGAME, CL_CgameSystemCalls, CL_DllSyscall, interpret );
  	if ( !cgvm ) {
  		Com_Error( ERR_DROP, "VM_Create on cgame failed" );
  	}
-@@ -901,6 +953,11 @@
+@@ -901,6 +1090,11 @@
  
  	Com_Printf( "CL_InitCGame: %5.2f seconds\n", (t2-t1)/1000.0 );
  
@@ -156,7 +337,7 @@
  	// have the renderer touch all its images, so they are present
  	// on the card even if the driver does deferred loading
  	re.EndRegistration();
-@@ -1038,6 +1095,20 @@
+@@ -1038,6 +1232,21 @@
  	}
  	cls.state = CA_ACTIVE;
  
@@ -167,7 +348,8 @@
 +		const char *team = Cvar_VariableString( va( "cl_splitTeam%i", cl_localPlayer + 1 ) );
 +		cl.serverTimeDelta = cl.snap.serverTime - cls.realtime;
 +		cl.oldServerTime = cl.snap.serverTime;
-+		if ( !cl_lp->teamSent && *team && atoi( Info_ValueForKey( info, "g_gametype" ) ) >= GT_TEAM ) {
++		if ( !cl_lp->teamSent && *team && atoi( Info_ValueForKey( info, "g_gametype" ) ) >= GT_TEAM
++			&& cl_localPlayer != CL_CameraPlayer() ) {
 +			CL_AddReliableCommand( va( "team %s", team ), qfalse );
 +		}
 +		cl_lp->teamSent = qtrue;
@@ -255,7 +437,7 @@
 +
 +	if ( Key_GetCatcher() & KEYCATCH_UI ) {
 +		CL_MouseEvent( dx, dy );
-+	} else if ( Key_GetCatcher() == 0 && CL_PlayerPlaying( player ) ) {
++	} else if ( Key_GetCatcher() == 0 && CL_PlayerPlaying( player ) && player != CL_CameraPlayer() ) {
 +		active = &cl_localPlayers[ player ].active;
 +		active->mouseDx[ active->mouseIndex ] += dx;
 +		active->mouseDy[ active->mouseIndex ] += dy;
@@ -271,7 +453,7 @@
 +=================
 +*/
 +void CL_PlayerJoystickEvent( int player, int axis, int value, int time ) {
-+	if ( (unsigned)player >= MAX_LOCAL_PLAYERS || axis < 0 || axis >= MAX_JOYSTICK_AXIS ) {
++	if ( (unsigned)player >= MAX_LOCAL_PLAYERS || axis < 0 || axis >= MAX_JOYSTICK_AXIS || player == CL_CameraPlayer() ) {
 +		return;
 +	}
 +
@@ -384,7 +566,7 @@
 +	if ( Key_GetCatcher() || key == K_ESCAPE ) {
 +		*state = PLAYER_KEY_SHARED;
 +		CL_KeyEvent( key, qtrue, time );
-+	} else if ( CL_PlayerPlaying( player ) ) {
++	} else if ( CL_PlayerPlaying( player ) && player != CL_CameraPlayer() ) {
 +		*state = PLAYER_KEY_BOUND;
 +		CL_PlayerBinding( player, key, qtrue, time );
 +	}
@@ -429,7 +611,7 @@
  	for ( i = 0 ; i < MAX_KEYS ; i++ )
 --- a/code/client/cl_main.c
 +++ b/code/client/cl_main.c
-@@ -94,11 +94,15 @@
+@@ -94,11 +94,17 @@
  cvar_t *cl_depthbits;
  cvar_t *cl_drawBuffer;
  
@@ -443,12 +625,14 @@
 +localPlayer_t		*cl_lp = &cl_localPlayers[ 0 ];
 +int					cl_localPlayer;
 +static int			cl_views = 1;	// the parts of the screen, set as a local map starts (CL_MapLoading)
++static int			cl_camera = -1;	// the local player who is the camera, set with cl_views
 +static cvar_t		*cl_splitPlayers;
++static cvar_t		*cl_splitCamera;
 +
  netadr_t			rcon_address;
  
  char				cl_oldGame[ MAX_QPATH ];
-@@ -130,6 +134,7 @@
+@@ -130,6 +136,7 @@
  static serverStatus_t cl_serverStatusList[MAX_SERVERSTATUSREQUESTS];
  
  static void CL_CheckForResend( void );
@@ -456,7 +640,7 @@
  static void CL_ShowIP_f( void );
  static void CL_ServerStatus_f( void );
  static void CL_ServerStatusResponse( const netadr_t *from, msg_t *msg );
-@@ -147,8 +152,423 @@
+@@ -147,8 +154,490 @@
  static void CL_InitGLimp_Cvars( void );
  
  static void CL_NextDemo( void );
@@ -574,6 +758,21 @@
 +
 +/*
 +=====================
++CL_CameraPlayer
++
++The local player who is the camera (cl_splitCamera): a spectator after the
++players, in a part of the screen of its own, who follows the players in
++the third person with no status bar (CL_CameraDirect, cl_cgame.c). -1 for
++none.
++=====================
++*/
++int CL_CameraPlayer( void ) {
++	return cl_camera < CL_SplitViews() ? cl_camera : -1;
++}
++
++
++/*
++=====================
 +CL_PlayerUserinfo
 +
 +The userinfo a local player sends: player 1's cvars, with cl_splitName<n> and
@@ -593,6 +792,12 @@
 +	if ( cl_localPlayer == 0 ) {
 +		return info;
 +	}
++	if ( cl_localPlayer == CL_CameraPlayer() ) {
++		// a willing spectator, never one waiting to play
++		Info_SetValueForKey_s( info, MAX_USERINFO_LENGTH, "name", "Camera" );
++		Info_SetValueForKey_s( info, MAX_USERINFO_LENGTH, "team", "s" );
++		return info;
++	}
 +
 +	// the models of player 1 and the players before this one
 +	Q_strncpyz( taken[ 0 ], Cvar_VariableString( "model" ), sizeof( taken[ 0 ] ) );
@@ -607,7 +812,7 @@
 +		}
 +		Q_strncpyz( taken[ player ], *model ? model : "visor", sizeof( taken[ player ] ) );
 +	}
- 
++
 +	name = Cvar_VariableString( va( "cl_splitName%i", cl_localPlayer + 1 ) );
 +	Info_SetValueForKey_s( info, MAX_USERINFO_LENGTH, "name", *name ? name : va( "Player %i", cl_localPlayer + 1 ) );
 +	Info_SetValueForKey_s( info, MAX_USERINFO_LENGTH, "model", taken[ cl_localPlayer ] );
@@ -619,7 +824,7 @@
 +}
 +
 +
- /*
++/*
 +=====================
 +CL_QPort
 +
@@ -646,6 +851,7 @@
 +	Com_Memset( &clc, 0, sizeof( clc ) );
 +	cl_lp->loadPending = qfalse;
 +	cl_lp->teamSent = qfalse;
++	cl_lp->cameraCut = 0;
 +	cl_lp->userinfo[0] = '\0';
 +
 +	NET_StringToAdr( "localhost", &clc.serverAddress, NA_UNSPEC );
@@ -759,9 +965,9 @@
 +
 +	CL_SetLocalPlayer( previous );
 +}
+ 
 +
-+
-+/*
+ /*
 +=====================
 +CL_InitSplitCGames
 +
@@ -782,6 +988,51 @@
 +	}
 +
 +	CL_SetLocalPlayer( previous );
++}
++
++
++/*
++=====================
++CL_CameraDirect
++
++The current player, the camera, cuts to another player every ten seconds.
++It starts as a dedicated follower of the leader ("team follow1"), whom a
++tournament never puts in to play; in a tournament it goes on cutting between
++the two players that way (follownext), and in the other games it follows
++each playing client in turn.
++=====================
++*/
++#define CAMERA_CUT_MSEC 10000
++
++static void CL_CameraDirect( void ) {
++	const char *serverInfo, *info;
++	int gametype, client, i;
++
++	if ( cls.state != CA_ACTIVE || ( cl_lp->cameraCut && cl_lp->cameraCut - cls.realtime > 0 ) ) {
++		return;
++	}
++
++	serverInfo = cl.gameState.stringData + cl.gameState.stringOffsets[ CS_SERVERINFO ];
++	gametype = atoi( Info_ValueForKey( serverInfo, "g_gametype" ) );
++	if ( !cl_lp->cameraCut ) {
++		CL_AddReliableCommand( "team follow1", qfalse );
++	} else if ( gametype == GT_TOURNAMENT ) {
++		CL_AddReliableCommand( "follownext", qfalse );
++	} else {
++		// the next playing client after the one followed now
++		client = ( cl.snap.ps.pm_flags & PMF_FOLLOW ) ? cl.snap.ps.clientNum : -1;
++		for ( i = 1; i <= MAX_CLIENTS; i++ ) {
++			const int next = ( client + i + MAX_CLIENTS ) % MAX_CLIENTS;
++			info = cl.gameState.stringData + cl.gameState.stringOffsets[ CS_PLAYERS + next ];
++			if ( *info && atoi( Info_ValueForKey( info, "t" ) ) != TEAM_SPECTATOR ) {
++				if ( next != client ) {
++					CL_AddReliableCommand( va( "follow %i", next ), qfalse );
++				}
++				break;
++			}
++		}
++	}
++	cl_lp->cameraCut = cls.realtime + CAMERA_CUT_MSEC;
 +}
 +
 +
@@ -880,7 +1131,7 @@
  ===============
  CL_CDDialog
  
-@@ -986,6 +1406,7 @@
+@@ -986,6 +1475,7 @@
  */
  static void CL_ShutdownVMs( void )
  {
@@ -888,7 +1139,7 @@
  	CL_ShutdownCGame();
  	CL_ShutdownUI();
  }
-@@ -1074,6 +1495,8 @@
+@@ -1074,6 +1564,8 @@
  =====================
  */
  qboolean CL_MapLoading( void ) {
@@ -897,7 +1148,7 @@
  	if ( com_dedicated->integer ) {
  		cls.state = CA_DISCONNECTED;
  		Key_SetCatcher( KEYCATCH_CONSOLE );
-@@ -1087,6 +1510,12 @@
+@@ -1087,6 +1579,12 @@
  	Con_Close();
  	Key_SetCatcher( 0 );
  
@@ -910,7 +1161,7 @@
  	// if we are already connected to the local host, stay connected
  	if ( cls.state >= CA_CONNECTED && !Q_stricmp( cls.servername, "localhost" ) ) {
  		cls.state = CA_CONNECTED;		// so the connect screen is drawn
-@@ -1094,6 +1523,17 @@
+@@ -1094,6 +1592,17 @@
  		Com_Memset( clc.serverMessage, 0, sizeof( clc.serverMessage ) );
  		Com_Memset( &cl.gameState, 0, sizeof( cl.gameState ) );
  		clc.lastPacketSentTime = cls.realtime - RETRANSMIT_TIMEOUT; // send packet immediately
@@ -928,19 +1179,24 @@
  		cls.framecount++;
  		SCR_UpdateScreen();
  	} else {
-@@ -1111,6 +1551,11 @@
+@@ -1109,6 +1618,16 @@
+ 		NET_StringToAdr( cls.servername, &clc.serverAddress, NA_UNSPEC );
+ 		// we don't need a challenge on the localhost
  		CL_CheckForResend();
++	}
++
++	// PS5: split screen. A part of the screen for each player cl_splitPlayers asks
++	// for, and one for the camera after them if cl_splitCamera asks and there is
++	// room, until the next map; the players after the first join once player 1
++	// has (CL_SplitSync).
++	cl_views = cl_splitPlayers->integer;
++	cl_camera = -1;
++	if ( cl_views > 1 && cl_splitCamera->integer && cl_views < MAX_LOCAL_PLAYERS ) {
++		cl_camera = cl_views++;
  	}
  
-+	// PS5: split screen. A part of the screen for each player cl_splitPlayers asks
-+	// for, until the next map; the players after the first join once player 1 has
-+	// (CL_SplitSync).
-+	cl_views = cl_splitPlayers->integer;
-+
  	return qtrue;
- }
- 
-@@ -1202,6 +1647,7 @@
+@@ -1202,6 +1721,7 @@
  qboolean CL_Disconnect( qboolean showMainMenu ) {
  	static qboolean cl_disconnecting = qfalse;
  	qboolean cl_restarted = qfalse;
@@ -948,7 +1204,7 @@
  
  	if ( !com_cl_running || !com_cl_running->integer ) {
  		return cl_restarted;
-@@ -1213,6 +1659,10 @@
+@@ -1213,6 +1733,10 @@
  
  	cl_disconnecting = qtrue;
  
@@ -959,7 +1215,7 @@
  	// Stop demo recording
  	if ( clc.demorecording ) {
  		CL_StopRecord_f();
-@@ -1265,6 +1715,14 @@
+@@ -1265,6 +1789,14 @@
  		return qfalse;
  	}
  
@@ -974,7 +1230,7 @@
  	// send a disconnect message to the server
  	// send it a few times in case one is dropped
  	if ( cls.state >= CA_CONNECTED && cls.state != CA_CINEMATIC && !clc.demoplaying ) {
-@@ -1785,6 +2243,8 @@
+@@ -1785,6 +2317,8 @@
  */
  static void CL_Vid_Restart( refShutdownCode_t shutdownCode ) {
  
@@ -983,7 +1239,7 @@
  	// Settings may have changed so stop recording now
  	if ( CL_VideoRecording() )
  		CL_CloseAVI( qfalse );
-@@ -1827,6 +2287,8 @@
+@@ -1827,6 +2361,8 @@
  		CL_InitCGame();
  		// send pure checksums
  		CL_SendPureChecksums();
@@ -992,7 +1248,7 @@
  	}
  
  	cls.startCgame = qfalse;
-@@ -2303,10 +2765,10 @@
+@@ -2303,10 +2839,10 @@
  
  	case CA_CHALLENGING:
  		// sending back the challenge
@@ -1005,7 +1261,7 @@
  
  		// remove some non-important keys that may cause overflow during connection
  		if ( strlen( info ) > MAX_USERINFO_LENGTH - 64 ) {
-@@ -2346,6 +2808,12 @@
+@@ -2346,6 +2882,12 @@
  		len = Com_sprintf( data, sizeof( data ), "connect \"%s\"", info );
  		// NOTE TTimo don't forget to set the right data length!
  		NET_OutOfBandCompress( NS_CLIENT, &clc.serverAddress, (byte *) &data[0], len );
@@ -1018,7 +1274,7 @@
  		// the most current userinfo has been sent, so watch for any
  		// newer changes to userinfo variables
  		cvar_modifiedFlags &= ~CVAR_USERINFO;
-@@ -2753,7 +3221,7 @@
+@@ -2753,7 +3295,7 @@
  			}
  		}
  
@@ -1027,7 +1283,7 @@
  
  		cls.state = CA_CONNECTED;
  		clc.lastPacketSentTime = cls.realtime - RETRANSMIT_TIMEOUT; // send first packet immediately
-@@ -2896,6 +3364,12 @@
+@@ -2896,6 +3438,12 @@
  		&& cls.state >= CA_CONNECTED && cls.state != CA_CINEMATIC
  		&& cls.realtime - clc.lastPacketTime > cl_timeout->integer * 1000 ) {
  		if ( ++cl.timeoutcount > 5 ) { // timeoutcount saves debugger
@@ -1040,7 +1296,7 @@
  			Com_Printf( "\nServer connection timed out.\n" );
  			Cvar_Set( "com_errorMessage", "Server connection timed out." );
  			if ( !CL_Disconnect( qfalse ) ) { // restart client if not done already
-@@ -2959,6 +3433,17 @@
+@@ -2959,6 +3507,17 @@
  	if ( CL_CheckPaused() )
  		return;
  
@@ -1058,7 +1314,7 @@
  	// send a reliable userinfo update if needed
  	if ( cvar_modifiedFlags & CVAR_USERINFO )
  	{
-@@ -2983,6 +3468,7 @@
+@@ -2983,6 +3542,7 @@
  ==================
  */
  void CL_Frame( int msec, int realMsec ) {
@@ -1066,7 +1322,7 @@
  
  #ifdef USE_CURL
  	if ( download.cURL ) {
-@@ -2994,6 +3480,10 @@
+@@ -2994,6 +3554,10 @@
  		return;
  	}
  
@@ -1077,22 +1333,19 @@
  	// save the msec before checking pause
  	cls.realFrametime = realMsec;
  
-@@ -3094,26 +3584,51 @@
+@@ -3094,26 +3658,55 @@
  		SCR_DebugGraph( msec * 0.25f );
  	}
  
 -	// see if we need to update any userinfo
 -	CL_CheckUserinfo();
--
++	// PS5: split screen, the other local players join or leave
++	CL_SplitSync();
+ 
 -	// if we haven't gotten a packet in a long time, drop the connection
 -	if ( !clc.demoplaying ) {
 -		CL_CheckTimeout();
 -	}
-+	// PS5: split screen, the other local players join or leave
-+	CL_SplitSync();
- 
--	// send intentions now
--	CL_SendCmd();
 +	// PS5: each local player's connection and game, player 1's first
 +	for ( i = 0; i < MAX_LOCAL_PLAYERS; i++ ) {
 +		if ( i > 0 && cl_localPlayers[ i ].state <= CA_DISCONNECTED ) {
@@ -1100,18 +1353,20 @@
 +		}
 +		CL_SetLocalPlayer( i );
  
--	// resend a connection request if necessary
--	CL_CheckForResend();
+-	// send intentions now
+-	CL_SendCmd();
 +		// see if we need to update any userinfo
 +		CL_CheckUserinfo();
  
--	// decide on the serverTime to render
--	CL_SetCGameTime();
+-	// resend a connection request if necessary
+-	CL_CheckForResend();
 +		// if we haven't gotten a packet in a long time, drop the connection
 +		if ( !clc.demoplaying ) {
 +			CL_CheckTimeout();
 +		}
-+
+ 
+-	// decide on the serverTime to render
+-	CL_SetCGameTime();
 +		// send intentions now
 +		CL_SendCmd();
 +
@@ -1125,6 +1380,10 @@
 +
 +		// decide on the serverTime to render
 +		CL_SetCGameTime();
++
++		if ( i == CL_CameraPlayer() ) {
++			CL_CameraDirect();
++		}
 +	}
 +	CL_SetLocalPlayer( 0 );
 +	CL_SplitScores();
@@ -1142,7 +1401,7 @@
  
  	// update audio
  	S_Update( realMsec );
-@@ -3888,10 +4403,17 @@
+@@ -3888,10 +4481,17 @@
  void CL_Init( void ) {
  	const char *s;
  	cvar_t *cv;
@@ -1160,14 +1419,18 @@
  
  	CL_ClearState();
  	cls.state = CA_DISCONNECTED;	// no longer CA_UNINITIALIZED
-@@ -4008,6 +4530,19 @@
+@@ -4007,6 +4607,22 @@
+ 	Cvar_SetDescription( cl_dlDirectory, s );
  
  	cl_reconnectArgs = Cvar_Get( "cl_reconnectArgs", "", CVAR_ARCHIVE_ND | CVAR_NOTABCOMPLETE );
- 
++
 +	// PS5: split screen
 +	cl_splitPlayers = Cvar_Get( "cl_splitPlayers", "1", CVAR_TEMP );
 +	Cvar_CheckRange( cl_splitPlayers, "1", XSTRING( MAX_LOCAL_PLAYERS ), CV_INTEGER );
 +	Cvar_SetDescription( cl_splitPlayers, "PS5: the players who play on the local server's next map, each in a part of the screen (split screen). The menus set it." );
++	cl_splitCamera = Cvar_Get( "cl_splitCamera", "0", CVAR_TEMP );
++	Cvar_CheckRange( cl_splitCamera, "0", "1", CV_INTEGER );
++	Cvar_SetDescription( cl_splitCamera, "PS5: split screen with a camera beside the players, a spectator who follows them from behind (when there is a part of the screen for it). The menus set it." );
 +	for ( i = 2; i <= MAX_LOCAL_PLAYERS; i++ ) {
 +		cv = Cvar_Get( va( "cl_splitName%i", i ), "", CVAR_TEMP );
 +		Cvar_SetDescription( cv, va( "PS5: player %i's name in split screen (empty: \"Player %i\").", i, i ) );
@@ -1176,11 +1439,10 @@
 +		cv = Cvar_Get( va( "cl_splitTeam%i", i ), "", CVAR_TEMP );
 +		Cvar_SetDescription( cv, va( "PS5: the team player %i joins in a team game in split screen (red or blue; the menus set it).", i ) );
 +	}
-+
+ 
  	// userinfo
  	Cvar_Get ("name", "UnnamedPlayer", CVAR_USERINFO | CVAR_ARCHIVE_ND );
- 	Cvar_Get ("rate", "25000", CVAR_USERINFO | CVAR_ARCHIVE );
-@@ -4067,6 +4602,7 @@
+@@ -4067,6 +4683,7 @@
  	Cmd_AddCommand ("stopvideo", CL_StopVideo_f );
  	Cmd_AddCommand ("serverinfo", CL_Serverinfo_f );
  	Cmd_AddCommand ("systeminfo", CL_Systeminfo_f );
@@ -1188,7 +1450,7 @@
  
  #ifdef USE_CURL
  	Cmd_AddCommand( "download", CL_Download_f );
-@@ -4120,6 +4656,7 @@
+@@ -4120,6 +4737,7 @@
  	Con_Shutdown();
  
  	Cmd_RemoveCommand ("cmd");
@@ -1263,17 +1525,15 @@
  	cl_timegraph = Cvar_Get ("timegraph", "0", CVAR_CHEAT);
  	cl_debuggraph = Cvar_Get ("debuggraph", "0", CVAR_CHEAT);
  	cl_graphheight = Cvar_Get ("graphheight", "32", CVAR_CHEAT);
-@@ -511,9 +516,399 @@
- 
- 
+@@ -513,7 +518,455 @@
  //=======================================================
-+
-+/*
+ 
+ /*
 +==================
 +SCR_DrawCenteredText
 +
 +PS5: split screen. A line of text centred on x, in pixels, size pixels a letter.
-+==================
+ ==================
 +*/
 +static void SCR_DrawCenteredText( int x, int y, int size, const char *text, const float *color ) {
 +	const int length = strlen( text );
@@ -1293,10 +1553,10 @@
 +	}
 +	re.SetColor( NULL );
 +}
- 
 +
- /*
- ==================
++
++/*
++==================
 +SCR_DrawPlayerJoining
 +
 +PS5: split screen. The current player's part of the screen while they join.
@@ -1308,7 +1568,8 @@
 +
 +	CL_PlayerView( cl_localPlayer, &x, &y, &width, &height );
 +	size = height / 16;
-+	SCR_DrawCenteredText( x + width / 2, y + height / 2 - size, size, va( "PLAYER %i", cl_localPlayer + 1 ), g_color_table[ ColorIndex( COLOR_WHITE ) ] );
++	SCR_DrawCenteredText( x + width / 2, y + height / 2 - size, size,
++		cl_localPlayer == CL_CameraPlayer() ? "CAMERA" : va( "PLAYER %i", cl_localPlayer + 1 ), g_color_table[ ColorIndex( COLOR_WHITE ) ] );
 +	size /= 3;
 +	SCR_DrawCenteredText( x + width / 2, y + height / 2 + size, size, clc.serverMessage[0] ? clc.serverMessage : "Joining...", grey );
 +}
@@ -1488,13 +1749,18 @@
 +	if ( (unsigned)client >= MAX_CLIENTS ) {
 +		return qfalse;
 +	}
++	// the camera only looks on
++	player = CL_CameraPlayer();
++	if ( player >= 0 && CL_PlayerState( player ) >= CA_PRIMED && cl_localPlayers[ player ].connection.clientNum == client ) {
++		return qfalse;
++	}
 +	info = cl.gameState.stringData + cl.gameState.stringOffsets[ CS_PLAYERS + client ];
 +	if ( atoi( Info_ValueForKey( info, "t" ) ) != team ) {
 +		return qfalse;
 +	}
 +
 +	// the players on the console, each in their own colour, as P1, P2...
-+	for ( player = 0; player < CL_SplitViews(); player++ ) {
++	for ( player = 0; player < CL_SplitViews() && player != CL_CameraPlayer(); player++ ) {
 +		if ( CL_PlayerState( player ) >= CA_PRIMED && cl_localPlayers[ player ].connection.clientNum == client ) {
 +			SCR_BoardFill( SB_SCORELINE_X + BIGCHAR_WIDTH + SB_RATING_WIDTH / 2, y,
 +				640 - SB_SCORELINE_X - BIGCHAR_WIDTH, BIGCHAR_HEIGHT + 1, localColors[ player ] );
@@ -1616,6 +1882,55 @@
 +
 +/*
 +==================
++SCR_DrawCameraName
++
++The camera's part of the screen, with the camera current: whom it follows,
++the name in its colours low in the middle, as a caption.
++==================
++*/
++static void SCR_DrawCameraName( void ) {
++	const float shadow[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
++	const char *info, *name, *s;
++	int x, y, width, height, size, pass, xx, ch;
++	vec4_t color;
++	float row, col;
++
++	if ( !( cl.snap.ps.pm_flags & PMF_FOLLOW ) || (unsigned)cl.snap.ps.clientNum >= MAX_CLIENTS ) {
++		return;
++	}
++	info = cl.gameState.stringData + cl.gameState.stringOffsets[ CS_PLAYERS + cl.snap.ps.clientNum ];
++	name = Info_ValueForKey( info, "n" );
++
++	CL_PlayerView( cl_localPlayer, &x, &y, &width, &height );
++	size = height / 24;
++	x += ( width - Q_PrintStrlen( name ) * size ) / 2;
++	y += height - size * 2;
++	for ( pass = 0; pass < 2; pass++ ) {
++		re.SetColor( pass ? g_color_table[ ColorIndex( COLOR_WHITE ) ] : shadow );
++		for ( s = name, xx = x + ( pass ? 0 : size / 8 ); *s; s++ ) {
++			if ( Q_IsColorString( s ) ) {
++				if ( pass ) {
++					Com_Memcpy( color, g_color_table[ ColorIndexFromChar( s[1] ) ], sizeof( color ) );
++					re.SetColor( color );
++				}
++				s++;
++				continue;
++			}
++			ch = *s & 255;
++			if ( ch != ' ' ) {
++				row = ( ch >> 4 ) * 0.0625f;
++				col = ( ch & 15 ) * 0.0625f;
++				re.DrawStretchPic( xx, y + ( pass ? 0 : size / 8 ), size, size, col, row, col + 0.0625f, row + 0.0625f, cls.charSetShader );
++			}
++			xx += size;
++		}
++	}
++	re.SetColor( NULL );
++}
++
++
++/*
++==================
 +SCR_DrawPlayerViews
 +
 +PS5: split screen. Each local player's part of the screen, on black: the gaps
@@ -1639,6 +1954,9 @@
 +			// the game information screen and loading progress, or the game
 +			if ( cgvm ) {
 +				CL_CGameRendering( stereoFrame );
++				if ( player == CL_CameraPlayer() ) {
++					SCR_DrawCameraName();
++				}
 +				break;
 +			}
 +			// fall through
@@ -1663,7 +1981,7 @@
  SCR_DrawScreenField
  
  This will be called twice if rendering in stereo mode
-@@ -521,6 +916,7 @@
+@@ -521,6 +974,7 @@
  */
  static void SCR_DrawScreenField( stereoFrame_t stereoFrame ) {
  	qboolean uiFullscreen;
@@ -1671,7 +1989,7 @@
  
  	re.BeginFrame( stereoFrame );
  
-@@ -541,7 +937,10 @@
+@@ -541,7 +995,10 @@
  
  	// if the menu is going to cover the entire screen, we
  	// don't need to render anything under it
@@ -1683,7 +2001,7 @@
  		switch( cls.state ) {
  		default:
  			Com_Error( ERR_FATAL, "SCR_DrawScreenField: bad cls.state" );
-@@ -597,6 +996,8 @@
+@@ -597,6 +1054,8 @@
  	if ( cl_debuggraph->integer || cl_timegraph->integer || cl_debugMove->integer ) {
  		SCR_DrawDebugGraph ();
  	}
@@ -1712,11 +2030,10 @@
  /*
  ==================================================================
  
-@@ -363,7 +359,46 @@
- 
+@@ -364,6 +360,47 @@
  extern	char		cl_oldGame[MAX_QPATH];
  extern	qboolean	cl_oldGameSet;
-+
+ 
 +/*
 +==================================================================
 +
@@ -1727,7 +2044,7 @@
 +Player 1 (0) is the client as it always was. The others connect to the local
 +server beside player 1, on loopback channels of their own, when a local map
 +starts with cl_splitPlayers above 1, and each has a part of the screen.
- 
++
 +==================================================================
 +*/
 +
@@ -1739,6 +2056,7 @@
 +	qboolean			loadPending;	// the gamestate came, to load once player 1 has
 +	qboolean			teamSent;		// cl_splitTeam<n> went to the server
 +	qboolean			dropped;		// the server let this player go: out until the next map
++	int					cameraCut;		// the camera's: cls.realtime of its next cut, 0 before the first
 +	char				userinfo[MAX_INFO_STRING];	// as last sent (players 2 and on)
 +} localPlayer_t;
 +
@@ -1755,11 +2073,12 @@
 +int		CL_SplitViews( void );				// the parts of the screen: 1 without split screen
 +void	CL_PlayerView( int player, int *x, int *y, int *width, int *height );
 +qboolean CL_PlayerPlaying( int player );	// in a part of the screen, and in the game
++int		CL_CameraPlayer( void );			// the local player who is the camera, or -1
 +
  #ifdef USE_CURL
  
  extern		download_t	download;
-@@ -378,7 +413,6 @@
+@@ -378,7 +415,6 @@
  
  //=============================================================================
  
@@ -1767,7 +2086,7 @@
  extern	vm_t			*uivm;	// interface to ui dll or vm
  extern	refexport_t		re;		// interface to refresh .dll
  
-@@ -528,6 +562,7 @@
+@@ -528,6 +564,7 @@
  void	SCR_UpdateScreen( void );
  
  void	SCR_DebugGraph( float value );
