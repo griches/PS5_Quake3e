@@ -23,7 +23,7 @@ or read it in the console's log; nothing else is claimed.
 | Start-up and exit | Boots to the menu, loads all nine pak files, quits cleanly to the home screen | |
 | Rendering | Single player plays at 3840x2160 on a 59.94 Hz display | Whether it holds 60 fps everywhere; 120 Hz (the test display stayed at 60) |
 | Video modes | The menu lists 3840x2160, 2560x1440 and 1920x1080; a live switch to 1920x1080 went through | 2560x1440 |
-| Split screen | Two, three and four players, 2026-10-21: each joins and plays; four players and three bots started from the menu; three players' scoreboard quarter, free for all and team deathmatch (players 2 and 3 on the teams chosen for them); the camera with two players, cutting between players and bots; the halves' display in its own shape; a locked 120 fps at 3840x2160 on a 120 Hz display with one to four players and three bots (q3dm4, q3dm17), never a missed refresh | Players 3 and 4 on their own controllers; team games; how far past 120 it could go |
+| Split screen | Two, three and four players, 2026-10-21: each joins and plays; four players and three bots started from the menu; three players' scoreboard quarter, free for all and team deathmatch (players 2 and 3 on the teams chosen for them); the camera with two players, cutting between players and bots; the halves' display in its own shape; bot views, player 1 and three quarters watching Xaero, Hunter and Klesk (q3dm4, from a script); a locked 120 fps at 3840x2160 on a 120 Hz display with one to four players and three bots (q3dm4, q3dm17), never a missed refresh | Players 3 and 4 on their own controllers; team games; how far past 120 it could go; the bot views from the menu, and with View 2 to View 4 off the scoreboard |
 | Input | DualSense: sticks, buttons, triggers; a button rebound in the controls menu, saved across launches. A USB mouse (movement, three buttons, the wheel) and a USB keyboard, 2026-10-11. The gyro, aiming in play and moving the menu pointer, and the touch pad's tap and double tap, 2026-10-21 | The two sensitivity sliders and invert look; the mouse speed slider; a mouse's side buttons; a Bluetooth mouse or keyboard |
 | Sound | 48 kHz stereo effects | Music (no Ogg Vorbis in this build) |
 | Network | Name lookup works; the Internet server list fills (over 1,000 servers); a server's own pak files downloaded | A full online or LAN match, start to finish |
@@ -174,6 +174,10 @@ seconds each (bots too), with their name under it and no status bar.
    with the bots' skill at the top. In a team game, choose each player's team
    there (they start on the same team). **Camera** adds the camera (not with four
    players: two and the camera have quarters, with the scoreboard in the last).
+   Press on a **Player 2:** label to make it **Bot 2:**, and so on: that part of
+   the screen then watches the bot named next to it (choose the bot as for any
+   bot slot), through its eyes and with its status bar, for a four-player game to
+   record with one controller.
 4. **Fight**.
 
 Both controllers play with player 1's controls (Setup, Controls), and each
@@ -192,7 +196,9 @@ set by the menu), `cl_splitName2` (player 2's name, from their user),
 `cl_splitModel2` (player 2's model; empty picks one player 1 doesn't wear),
 `cl_splitTeam2` (player 2's team in a team game, set by the menu) and
 `in_ps5Gyro2` (player 2's gyro aim). Players 3 and 4 have their own (`cl_splitName3`
-and so on). `cl_splitCamera` adds the camera (set by the menu); its view is
+and so on). `cl_splitBot2` names the bot player 2's part of the screen watches
+(set by the menu; empty: a player). The camera and a bot's watchers are
+spectators named Camera and View 2 to View 4, kept off the scoreboard. `cl_splitCamera` adds the camera (set by the menu); its view is
 `cl_cameraRange` (100) behind the player, `cl_cameraAngle` around them,
 `cl_cameraThirdPerson` and `cl_cameraDraw2D` (0: no status bar).
 

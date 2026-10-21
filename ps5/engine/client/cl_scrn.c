@@ -738,19 +738,21 @@ static qboolean SCR_BoardLine( int i, int team, int y, int lineHeight ) {
 	if ( (unsigned)client >= MAX_CLIENTS ) {
 		return qfalse;
 	}
-	// the camera only looks on
-	player = CL_CameraPlayer();
-	if ( player >= 0 && CL_PlayerState( player ) >= CA_PRIMED && cl_localPlayers[ player ].connection.clientNum == client ) {
-		return qfalse;
+	// the camera and bots' watchers only look on
+	for ( player = 1; player < CL_SplitViews(); player++ ) {
+		if ( CL_PlayerOnlooker( player ) && CL_PlayerState( player ) >= CA_PRIMED && cl_localPlayers[ player ].connection.clientNum == client ) {
+			return qfalse;
+		}
 	}
 	info = cl.gameState.stringData + cl.gameState.stringOffsets[ CS_PLAYERS + client ];
 	if ( atoi( Info_ValueForKey( info, "t" ) ) != team ) {
 		return qfalse;
 	}
 
-	// the players on the console, each in their own colour, as P1, P2...
-	for ( player = 0; player < CL_SplitViews() && player != CL_CameraPlayer(); player++ ) {
-		if ( CL_PlayerState( player ) >= CA_PRIMED && cl_localPlayers[ player ].connection.clientNum == client ) {
+	// the players on the console, each in their own colour, as P1, P2... (a bot
+	// watched in a player's part of the screen is that player)
+	for ( player = 0; player < CL_SplitViews(); player++ ) {
+		if ( player != CL_CameraPlayer() && CL_PlayerClient( player ) == client ) {
 			SCR_BoardFill( SB_SCORELINE_X + BIGCHAR_WIDTH + SB_RATING_WIDTH / 2, y,
 				640 - SB_SCORELINE_X - BIGCHAR_WIDTH, BIGCHAR_HEIGHT + 1, localColors[ player ] );
 			SCR_BoardString( SB_BOTICON_X, y, va( "P%i", player + 1 ) );

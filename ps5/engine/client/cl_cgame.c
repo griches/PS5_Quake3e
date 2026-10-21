@@ -259,6 +259,79 @@ static void CL_ConfigstringModified( void ) {
 
 /*
 ===================
+CL_ScoresWithoutOnlookers
+
+PS5: split screen. The game's "scores" command (the count, the teams' scores,
+then fourteen numbers a client) without the local players who only look on.
+===================
+*/
+static const char *CL_ScoresWithoutOnlookers( const char *s ) {
+	static char scores[ MAX_STRING_CHARS ];
+	int onlookers[ MAX_LOCAL_PLAYERS ], numOnlookers = 0;
+	int count, red, blue, kept, i, j, k, field[14];
+	char rest[ MAX_STRING_CHARS ], *end;
+
+	for ( i = 1; i < CL_SplitViews(); i++ ) {
+		if ( CL_PlayerOnlooker( i ) && CL_PlayerState( i ) >= CA_PRIMED ) {
+			onlookers[ numOnlookers++ ] = cl_localPlayers[ i ].connection.clientNum;
+		}
+	}
+	if ( !numOnlookers ) {
+		return s;
+	}
+
+	s += strlen( "scores" );
+	count = strtol( s, &end, 10 ); s = end;
+	red = strtol( s, &end, 10 ); s = end;
+	blue = strtol( s, &end, 10 ); s = end;
+	rest[0] = '\0';
+	for ( i = kept = 0; i < count; i++ ) {
+		for ( j = 0; j < 14; j++ ) {
+			field[j] = strtol( s, &end, 10 );
+			s = end;
+		}
+		for ( k = 0; k < numOnlookers && onlookers[k] != field[0]; k++ )
+			;
+		if ( k < numOnlookers ) {
+			continue;
+		}
+		for ( j = 0; j < 14; j++ ) {
+			Q_strcat( rest, sizeof( rest ), va( " %i", field[j] ) );
+		}
+		kept++;
+	}
+	Com_sprintf( scores, sizeof( scores ), "scores %i %i %i%s", kept, red, blue, rest );
+	return scores;
+}
+
+
+/*
+===================
+CL_OnlookerNotice
+
+PS5: split screen. Whether a server message is about an onlooker coming or
+going ("View 2^7 connected").
+===================
+*/
+static qboolean CL_OnlookerNotice( const char *text ) {
+	const char *name;
+	int i, len;
+
+	for ( i = 1; i < CL_SplitViews(); i++ ) {
+		if ( CL_PlayerOnlooker( i ) ) {
+			name = CL_OnlookerName( i );
+			len = strlen( name );
+			if ( !strncmp( text, name, len ) && !strncmp( text + len, S_COLOR_WHITE " ", 3 ) ) {
+				return qtrue;
+			}
+		}
+	}
+	return qfalse;
+}
+
+
+/*
+===================
 CL_GetServerCommand
 
 Set up argc/argv for the given command
@@ -350,6 +423,19 @@ rescan:
 		CL_ConfigstringModified();
 		// reparse the string, because CL_ConfigstringModified may have done another Cmd_TokenizeString()
 		Cmd_TokenizeString( s );
+		return qtrue;
+	}
+
+	if ( !strcmp( cmd, "print" ) && CL_OnlookerNotice( Cmd_Argv( 1 ) ) ) {
+		// PS5: split screen, "View 2 connected" and the like
+		Cmd_Clear();
+		return qfalse;
+	}
+
+	if ( !strcmp( cmd, "scores" ) && CL_SplitViews() > 1 ) {
+		// PS5: split screen, the onlookers (the camera, bots' watchers) are no one to see
+		// on the scoreboard
+		Cmd_TokenizeString( CL_ScoresWithoutOnlookers( s ) );
 		return qtrue;
 	}
 
@@ -609,6 +695,16 @@ static void CL_SplitPicture( float *x, float *y, float *w, float *h, qhandle_t s
 }
 
 
+// The cgame's "following" and the followed player's name, across the top of a
+// spectator's screen (CG_DrawFollow: from 24 to 88 of the 480, about the middle)
+static qboolean CL_FollowingLine( float x, float y, float w, float h, int width, int height ) {
+	const float top = y * 480.0f / height, bottom = ( y + h ) * 480.0f / height;
+	const float middle = ( x + w * 0.5f ) * 640.0f / width;
+
+	return top >= 20.0f && bottom <= 92.0f && middle > 100.0f && middle < 540.0f;
+}
+
+
 // a shader the cgame registers: the crosshairs are kept (CL_SplitPicture)
 static qhandle_t CL_SplitShader( const char *name, qhandle_t shader ) {
 	int i;
@@ -744,8 +840,8 @@ static intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 		S_StartSound( VMA(1), args[2], args[3], args[4] );
 		return 0;
 	case CG_S_STARTLOCALSOUND:
-		// PS5: split screen, the camera's are the followed player's (rewards, hits): not ours
-		if ( cl_localPlayer != CL_CameraPlayer() ) {
+		// PS5: split screen, an onlooker's are the followed player's (rewards, hits): not ours
+		if ( !CL_PlayerOnlooker( cl_localPlayer ) ) {
 			S_StartLocalSound( args[1], args[2] );
 		}
 		return 0;
@@ -769,8 +865,8 @@ static intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 		S_UpdateEntityPosition( args[1], VMA(2) );
 		return 0;
 	case CG_S_RESPATIALIZE:
-		// PS5: split screen, the players hear the game; the camera only looks
-		if ( cl_localPlayer != CL_CameraPlayer() ) {
+		// PS5: split screen, the players hear the game; an onlooker only looks
+		if ( !CL_PlayerOnlooker( cl_localPlayer ) ) {
 			S_Respatialize( args[1], VMA(2), VMA(3), args[4] );
 		}
 		return 0;
@@ -845,6 +941,10 @@ static intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 		// PS5: split screen, into the player's part of the screen, its own shape
 		float px = VMF(1), py = VMF(2), pw = VMF(3), ph = VMF(4);
 		CL_PlayerView( cl_localPlayer, &x, &y, &width, &height );
+		// a bot's watcher draws as the bot would: not "following <name>" at the top
+		if ( CL_PlayerBot( cl_localPlayer ) && CL_FollowingLine( px, py, pw, ph, width, height ) ) {
+			return 0;
+		}
 		CL_SplitPicture( &px, &py, &pw, &ph, args[9] );
 		re.DrawStretchPic( px + x, py + y, pw, ph, VMF(5), VMF(6), VMF(7), VMF(8), args[9] );
 		return 0;
@@ -1257,7 +1357,7 @@ static void CL_FirstSnapshot( void ) {
 		cl.serverTimeDelta = cl.snap.serverTime - cls.realtime;
 		cl.oldServerTime = cl.snap.serverTime;
 		if ( !cl_lp->teamSent && *team && atoi( Info_ValueForKey( info, "g_gametype" ) ) >= GT_TEAM
-			&& cl_localPlayer != CL_CameraPlayer() ) {
+			&& !CL_PlayerOnlooker( cl_localPlayer ) ) {
 			CL_AddReliableCommand( va( "team %s", team ), qfalse );
 		}
 		cl_lp->teamSent = qtrue;

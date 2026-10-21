@@ -104,6 +104,7 @@ static int			cl_views = 1;	// the parts of the screen, set as a local map starts
 static int			cl_camera = -1;	// the local player who is the camera, set with cl_views
 static cvar_t		*cl_splitPlayers;
 static cvar_t		*cl_splitCamera;
+static cvar_t		*cl_splitBots[ MAX_LOCAL_PLAYERS ];	// cl_splitBot2 and on
 
 netadr_t			rcon_address;
 
@@ -283,6 +284,71 @@ int CL_CameraPlayer( void ) {
 
 /*
 =====================
+CL_PlayerBot
+
+The bot a local player's part of the screen watches (cl_splitBot<n>, set as
+they join): a fake player, for a game to record with fewer controllers than
+parts of the screen. The player joins as a spectator who follows the bot
+through its eyes, its status bar and all (CL_WatchDirect). NULL for a player
+who plays.
+=====================
+*/
+const char *CL_PlayerBot( int player ) {
+	if ( player <= 0 || player >= CL_SplitViews() || player == CL_CameraPlayer() || !cl_localPlayers[ player ].bot[0] ) {
+		return NULL;
+	}
+	return cl_localPlayers[ player ].bot;
+}
+
+
+/*
+=====================
+CL_PlayerOnlooker
+
+The camera or a bot's watcher: a spectator, who takes no controller's input,
+hears nothing and plays nothing, and is no one on the scoreboard.
+=====================
+*/
+qboolean CL_PlayerOnlooker( int player ) {
+	return player == CL_CameraPlayer() || CL_PlayerBot( player ) != NULL;
+}
+
+
+/*
+=====================
+CL_OnlookerName
+
+The name an onlooker plays under: "Camera", or "View <n>" for a bot's watcher.
+=====================
+*/
+const char *CL_OnlookerName( int player ) {
+	return player == CL_CameraPlayer() ? "Camera" : va( "View %i", player + 1 );
+}
+
+
+/*
+=====================
+CL_PlayerClient
+
+The client a local player's part of the screen shows: whom an onlooker
+follows, the player's own otherwise; -1 before they have a snapshot.
+=====================
+*/
+int CL_PlayerClient( int player ) {
+	const localPlayer_t *lp = &cl_localPlayers[ player ];
+
+	if ( CL_PlayerState( player ) != CA_ACTIVE ) {
+		return -1;
+	}
+	if ( CL_PlayerOnlooker( player ) ) {
+		return ( lp->active.snap.ps.pm_flags & PMF_FOLLOW ) ? lp->active.snap.ps.clientNum : -1;
+	}
+	return lp->connection.clientNum;
+}
+
+
+/*
+=====================
 CL_PlayerUserinfo
 
 The userinfo a local player sends: player 1's cvars, with cl_splitName<n> and
@@ -302,9 +368,9 @@ static const char *CL_PlayerUserinfo( qboolean *truncated ) {
 	if ( cl_localPlayer == 0 ) {
 		return info;
 	}
-	if ( cl_localPlayer == CL_CameraPlayer() ) {
+	if ( CL_PlayerOnlooker( cl_localPlayer ) ) {
 		// a willing spectator, never one waiting to play
-		Info_SetValueForKey_s( info, MAX_USERINFO_LENGTH, "name", "Camera" );
+		Info_SetValueForKey_s( info, MAX_USERINFO_LENGTH, "name", CL_OnlookerName( cl_localPlayer ) );
 		Info_SetValueForKey_s( info, MAX_USERINFO_LENGTH, "team", "s" );
 		return info;
 	}
@@ -364,6 +430,8 @@ static void CL_SplitJoin( int player ) {
 	cl_lp->cameraCut = 0;
 	cl_lp->cameraFollowed = -1;
 	cl_lp->userinfo[0] = '\0';
+	Q_strncpyz( cl_lp->bot, cl_splitBots[ player ] ? cl_splitBots[ player ]->string : "", sizeof( cl_lp->bot ) );
+	Q_CleanStr( cl_lp->bot );
 
 	NET_StringToAdr( "localhost", &clc.serverAddress, NA_UNSPEC );
 	clc.serverAddress.port = player; // the player's loopback channel
@@ -544,6 +612,38 @@ static void CL_CameraDirect( void ) {
 		}
 	}
 	cl_lp->cameraCut = cls.realtime + CAMERA_CUT_MSEC;
+}
+
+
+/*
+=====================
+CL_WatchDirect
+
+The current player watches a bot (CL_PlayerBot): until they follow it, once a
+second, they ask to (the bot may join after them, or come back on a new map).
+=====================
+*/
+static void CL_WatchDirect( void ) {
+	const char *bot = CL_PlayerBot( cl_localPlayer ), *info;
+	char name[MAX_NAME_LENGTH];
+	int client;
+
+	if ( !bot || cls.state != CA_ACTIVE || ( cl_lp->cameraCut && cl_lp->cameraCut - cls.realtime > 0 ) ) {
+		return;
+	}
+	cl_lp->cameraCut = cls.realtime + 1000;
+
+	for ( client = 0; client < MAX_CLIENTS; client++ ) {
+		info = cl.gameState.stringData + cl.gameState.stringOffsets[ CS_PLAYERS + client ];
+		Q_strncpyz( name, Info_ValueForKey( info, "n" ), sizeof( name ) );
+		Q_CleanStr( name );
+		if ( *info && !Q_stricmp( name, bot ) && atoi( Info_ValueForKey( info, "t" ) ) != TEAM_SPECTATOR ) {
+			if ( !( cl.snap.ps.pm_flags & PMF_FOLLOW ) || cl.snap.ps.clientNum != client ) {
+				CL_AddReliableCommand( va( "follow %i", client ), qfalse );
+			}
+			return;
+		}
+	}
 }
 
 
@@ -3693,6 +3793,8 @@ void CL_Frame( int msec, int realMsec ) {
 
 		if ( i == CL_CameraPlayer() ) {
 			CL_CameraDirect();
+		} else if ( CL_PlayerBot( i ) ) {
+			CL_WatchDirect();
 		}
 	}
 	CL_SetLocalPlayer( 0 );
@@ -4623,6 +4725,8 @@ void CL_Init( void ) {
 		Cvar_SetDescription( cv, va( "PS5: player %i's model in split screen (empty: one player 1 and the others don't wear).", i ) );
 		cv = Cvar_Get( va( "cl_splitTeam%i", i ), "", CVAR_TEMP );
 		Cvar_SetDescription( cv, va( "PS5: the team player %i joins in a team game in split screen (red or blue; the menus set it).", i ) );
+		cl_splitBots[ i - 1 ] = Cvar_Get( va( "cl_splitBot%i", i ), "", CVAR_TEMP );
+		Cvar_SetDescription( cl_splitBots[ i - 1 ], va( "PS5: the bot player %i's part of the screen watches through its eyes in split screen, a fake player (empty: a controller's; the menus set it).", i ) );
 	}
 
 	// userinfo

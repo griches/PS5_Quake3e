@@ -383,6 +383,7 @@ typedef struct {
 	qboolean			teamSent;		// cl_splitTeam<n> went to the server
 	qboolean			dropped;		// the server let this player go: out until the next map
 	int					cameraCut;		// the camera's: cls.realtime of its next cut, 0 before the first
+	char				bot[MAX_NAME_LENGTH];	// the bot this player's part of the screen watches (cl_splitBot<n>)
 	int					cameraFollowed;	// the camera's: the client its snapshots last followed
 	int					cameraCutTime;	// the camera's: cls.realtime its snapshots changed client
 	char				userinfo[MAX_INFO_STRING];	// as last sent (players 2 and on)
@@ -402,6 +403,10 @@ int		CL_SplitViews( void );				// the parts of the screen: 1 without split scree
 void	CL_PlayerView( int player, int *x, int *y, int *width, int *height );
 qboolean CL_PlayerPlaying( int player );	// in a part of the screen, and in the game
 int		CL_CameraPlayer( void );			// the local player who is the camera, or -1
+const char *CL_PlayerBot( int player );		// the bot a local player's part of the screen watches, or NULL
+qboolean CL_PlayerOnlooker( int player );	// the camera or a bot's watcher: a spectator, no one's to play
+int		CL_PlayerClient( int player );		// whom a local player's part of the screen shows, or -1
+const char *CL_OnlookerName( int player );	// "Camera" or "View <n>"
 
 #ifdef USE_CURL
 

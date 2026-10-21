@@ -645,6 +645,7 @@ SERVER OPTIONS MENU *****
 #define ID_BACK					24
 #define ID_SPLITPLAYERS			25	// PS5
 #define ID_SPLITCAMERA			26	// PS5
+#define ID_LOCALTYPE			27	// PS5
 
 #define PLAYER_SLOTS			12
 
@@ -669,8 +670,10 @@ typedef struct {
 	menutext_s			player0;
 	menulist_s			splitPlayersList;	// PS5: split screen, the players on the console
 	menuradiobutton_s	splitCamera;		// PS5: split screen, a camera beside them (not with four)
-	menutext_s			localPlayer[SPLIT_PLAYERS_MAX];	// PS5: split screen, "Player 2" and on
-	char				localPlayerLabels[SPLIT_PLAYERS_MAX][16];
+	menulist_s			localPlayer[SPLIT_PLAYERS_MAX];	// PS5: split screen, "Player 2:" or "Bot 2:" and on
+	char				localPlayerLabels[SPLIT_PLAYERS_MAX][2][16];
+	const char			*localPlayerItems[SPLIT_PLAYERS_MAX][3];
+	char				localBotNames[SPLIT_PLAYERS_MAX][16];	// the bot each would be
 	menulist_s			playerType[PLAYER_SLOTS];
 	menutext_s			playerName[PLAYER_SLOTS];
 	menulist_s			playerTeam[PLAYER_SLOTS];
@@ -819,9 +822,16 @@ static void ServerOptions_Start( void ) {
 		break;
 	}
 
-	// PS5: split screen, the camera is a client too
+	// PS5: split screen, the camera is a client too, and so is each bot's watcher
 	if( s_serveroptions.splitPlayers > 1 && s_serveroptions.splitPlayers < SPLIT_PLAYERS_MAX && s_serveroptions.splitCamera.curvalue ) {
 		maxclients++;
+	}
+	for( n = 1; n < SPLIT_PLAYERS_MAX; n++ ) {
+		const qboolean bot = n < s_serveroptions.splitPlayers && s_serveroptions.localPlayer[n].curvalue == 1;
+		trap_Cvar_Set( va( "cl_splitBot%i", n + 1 ), bot ? s_serveroptions.playerNameBuffers[n] : "" );
+		if( bot ) {
+			maxclients++;
+		}
 	}
 
 	trap_Cvar_SetValue( "sv_maxclients", Com_Clamp( 0, 12, maxclients ) );
@@ -1014,6 +1024,15 @@ static void ServerOptions_Event( void* ptr, int event ) {
 		ServerOptions_SetPlayerItems();
 		break;
 
+	case ID_LOCALTYPE:
+		// PS5: split screen, a player's slot between a controller and a bot
+		if( event != QM_ACTIVATED ) {
+			break;
+		}
+		ServerOptions_InitLocalPlayers();
+		ServerOptions_SetPlayerItems();
+		break;
+
 	case ID_SPLITPLAYERS:
 		// PS5: split screen, the slots again for this many players on the console
 		if( event != QM_ACTIVATED ) {
@@ -1072,6 +1091,9 @@ static void ServerOptions_StatusBar( void* ptr ) {
 		// PS5: split screen
 		UI_DrawString( 320, 440, "A view that follows the players", UI_CENTER|UI_SMALLFONT, colorWhite );
 		break;
+	case ID_LOCALTYPE:
+		UI_DrawString( 320, 440, "Bot: this part of the screen watches a bot", UI_CENTER|UI_SMALLFONT, colorWhite );
+		break;
 	default:
 		UI_DrawString( 320, 440, "0 = NO LIMIT", UI_CENTER|UI_SMALLFONT, colorWhite );
 		break;
@@ -1092,6 +1114,10 @@ static void ServerOptions_LevelshotDraw( void *self ) {
 	// strange place for this, but it works
 	if( s_serveroptions.newBot ) {
 		Q_strncpyz( s_serveroptions.playerNameBuffers[s_serveroptions.newBotIndex], s_serveroptions.newBotName, 16 );
+		if( s_serveroptions.newBotIndex < SPLIT_PLAYERS_MAX ) {
+			// PS5: split screen, a player's slot's bot
+			Q_strncpyz( s_serveroptions.localBotNames[s_serveroptions.newBotIndex], s_serveroptions.newBotName, 16 );
+		}
 		s_serveroptions.newBot = qfalse;
 	}
 
@@ -1243,18 +1269,27 @@ static void ServerOptions_InitLocalPlayers( void ) {
 
 	for( n = 1; n < SPLIT_PLAYERS_MAX; n++ ) {
 		if( n >= s_serveroptions.splitPlayers ) {
-			s_serveroptions.localPlayer[n].generic.flags |= QMF_HIDDEN;
+			s_serveroptions.localPlayer[n].generic.flags |= QMF_HIDDEN|QMF_INACTIVE;
 			s_serveroptions.playerType[n].generic.flags &= ~(QMF_HIDDEN|QMF_INACTIVE);
 			s_serveroptions.playerName[n].generic.flags &= ~QMF_INACTIVE;
 			continue;
 		}
-		s_serveroptions.localPlayer[n].generic.flags &= ~QMF_HIDDEN;
+		s_serveroptions.localPlayer[n].generic.flags &= ~(QMF_HIDDEN|QMF_INACTIVE);
 		s_serveroptions.playerType[n].generic.flags |= QMF_HIDDEN|QMF_INACTIVE;
-		s_serveroptions.playerName[n].generic.flags |= QMF_INACTIVE;
-		s_serveroptions.playerType[n].curvalue = 0;
-		trap_Cvar_VariableStringBuffer( va( "cl_splitName%i", n + 1 ), name, sizeof( name ) );
-		Q_CleanStr( name );
-		Q_strncpyz( s_serveroptions.playerNameBuffers[n], name[0] ? name : va( "Player %i", n + 1 ), sizeof( s_serveroptions.playerNameBuffers[n] ) );
+		if( s_serveroptions.localPlayer[n].curvalue == 1 ) {
+			// a bot, whose eyes the player's part of the screen watches: a bot slot
+			// (its name chooses it), for a game to record with fewer controllers
+			s_serveroptions.playerType[n].curvalue = 1;
+			s_serveroptions.playerName[n].generic.flags &= ~QMF_INACTIVE;
+			Q_strncpyz( s_serveroptions.playerNameBuffers[n], s_serveroptions.localBotNames[n], sizeof( s_serveroptions.playerNameBuffers[n] ) );
+		}
+		else {
+			s_serveroptions.playerType[n].curvalue = 0;
+			s_serveroptions.playerName[n].generic.flags |= QMF_INACTIVE;
+			trap_Cvar_VariableStringBuffer( va( "cl_splitName%i", n + 1 ), name, sizeof( name ) );
+			Q_CleanStr( name );
+			Q_strncpyz( s_serveroptions.playerNameBuffers[n], name[0] ? name : va( "Player %i", n + 1 ), sizeof( s_serveroptions.playerNameBuffers[n] ) );
+		}
 		if( s_serveroptions.gametype >= GT_TEAM ) {
 			s_serveroptions.playerTeam[n].curvalue = s_serveroptions.playerTeam[0].curvalue;
 		}
@@ -1566,17 +1601,25 @@ static void ServerOptions_MenuInit( qboolean multiplayer ) {
 		s_serveroptions.playerTeam[n].generic.y			= y;
 		s_serveroptions.playerTeam[n].itemnames			= playerTeam_list;
 
-		// PS5: split screen, the other players on the console are named as player 1 is
-		// (ServerOptions_InitLocalPlayers shows these in place of the slots' types)
+		// PS5: split screen, the other players on the console are named as player 1 is,
+		// or are a bot whose eyes their part of the screen watches (ServerOptions_InitLocalPlayers
+		// shows these in place of the slots' types)
 		if( n > 0 && n < SPLIT_PLAYERS_MAX ) {
-			Com_sprintf( s_serveroptions.localPlayerLabels[n], sizeof( s_serveroptions.localPlayerLabels[n] ), "Player %i:", n + 1 );
-			s_serveroptions.localPlayer[n].generic.type		= MTYPE_TEXT;
-			s_serveroptions.localPlayer[n].generic.flags	= QMF_SMALLFONT|QMF_HIDDEN;
-			s_serveroptions.localPlayer[n].generic.x		= 32;
+			static const char *const bots[SPLIT_PLAYERS_MAX] = { "", "Xaero", "Hunter", "Klesk" };
+			Com_sprintf( s_serveroptions.localPlayerLabels[n][0], sizeof( s_serveroptions.localPlayerLabels[n][0] ), "Player %i:", n + 1 );
+			Com_sprintf( s_serveroptions.localPlayerLabels[n][1], sizeof( s_serveroptions.localPlayerLabels[n][1] ), "Bot %i:", n + 1 );
+			s_serveroptions.localPlayerItems[n][0]			= s_serveroptions.localPlayerLabels[n][0];
+			s_serveroptions.localPlayerItems[n][1]			= s_serveroptions.localPlayerLabels[n][1];
+			s_serveroptions.localPlayerItems[n][2]			= NULL;
+			Q_strncpyz( s_serveroptions.localBotNames[n], bots[n], sizeof( s_serveroptions.localBotNames[n] ) );
+			s_serveroptions.localPlayer[n].generic.type		= MTYPE_SPINCONTROL;
+			s_serveroptions.localPlayer[n].generic.flags	= QMF_SMALLFONT|QMF_HIDDEN|QMF_INACTIVE;
+			s_serveroptions.localPlayer[n].generic.id		= ID_LOCALTYPE;
+			s_serveroptions.localPlayer[n].generic.callback	= ServerOptions_Event;
+			s_serveroptions.localPlayer[n].generic.statusbar	= ServerOptions_StatusBar;
+			s_serveroptions.localPlayer[n].generic.x		= 32 - SMALLCHAR_WIDTH;
 			s_serveroptions.localPlayer[n].generic.y		= y;
-			s_serveroptions.localPlayer[n].color			= color_orange;
-			s_serveroptions.localPlayer[n].style			= UI_LEFT|UI_SMALLFONT;
-			s_serveroptions.localPlayer[n].string			= s_serveroptions.localPlayerLabels[n];
+			s_serveroptions.localPlayer[n].itemnames		= s_serveroptions.localPlayerItems[n];
 		}
 
 		y += ( SMALLCHAR_HEIGHT + 4 );
