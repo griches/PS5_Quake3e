@@ -456,7 +456,7 @@
  static void CL_ShowIP_f( void );
  static void CL_ServerStatus_f( void );
  static void CL_ServerStatusResponse( const netadr_t *from, msg_t *msg );
-@@ -147,8 +152,400 @@
+@@ -147,8 +152,423 @@
  static void CL_InitGLimp_Cvars( void );
  
  static void CL_NextDemo( void );
@@ -593,7 +593,7 @@
 +	if ( cl_localPlayer == 0 ) {
 +		return info;
 +	}
- 
++
 +	// the models of player 1 and the players before this one
 +	Q_strncpyz( taken[ 0 ], Cvar_VariableString( "model" ), sizeof( taken[ 0 ] ) );
 +	for ( player = 1; player <= cl_localPlayer; player++ ) {
@@ -607,7 +607,7 @@
 +		}
 +		Q_strncpyz( taken[ player ], *model ? model : "visor", sizeof( taken[ player ] ) );
 +	}
-+
+ 
 +	name = Cvar_VariableString( va( "cl_splitName%i", cl_localPlayer + 1 ) );
 +	Info_SetValueForKey_s( info, MAX_USERINFO_LENGTH, "name", *name ? name : va( "Player %i", cl_localPlayer + 1 ) );
 +	Info_SetValueForKey_s( info, MAX_USERINFO_LENGTH, "model", taken[ cl_localPlayer ] );
@@ -787,6 +787,29 @@
 +
 +/*
 +=====================
++CL_SplitScores
++
++With player 1 current: three players leave a quarter of the screen to the
++scoreboard (cl_scrn.c), and player 1 asks the game for the scores once a
++second for it, as the game's own scoreboard does while it is shown.
++=====================
++*/
++static void CL_SplitScores( void ) {
++	static int next;
++
++	if ( CL_SplitViews() != 3 || cls.state != CA_ACTIVE || clc.demoplaying ) {
++		return;
++	}
++	if ( next - cls.realtime > 0 && next - cls.realtime <= 1000 ) {
++		return;
++	}
++	next = cls.realtime + 1000;
++	CL_AddReliableCommand( "score", qfalse );
++}
++
++
++/*
++=====================
 +CL_PlayerPacketEvent
 +
 +A packet on a local player's loopback channel.
@@ -857,7 +880,7 @@
  ===============
  CL_CDDialog
  
-@@ -986,6 +1383,7 @@
+@@ -986,6 +1406,7 @@
  */
  static void CL_ShutdownVMs( void )
  {
@@ -865,7 +888,7 @@
  	CL_ShutdownCGame();
  	CL_ShutdownUI();
  }
-@@ -1074,6 +1472,8 @@
+@@ -1074,6 +1495,8 @@
  =====================
  */
  qboolean CL_MapLoading( void ) {
@@ -874,20 +897,20 @@
  	if ( com_dedicated->integer ) {
  		cls.state = CA_DISCONNECTED;
  		Key_SetCatcher( KEYCATCH_CONSOLE );
-@@ -1086,6 +1486,12 @@
- 
+@@ -1087,6 +1510,12 @@
  	Con_Close();
  	Key_SetCatcher( 0 );
-+
+ 
 +	// PS5: split screen. Everyone the server let go may come back.
 +	CL_SetLocalPlayer( 0 );
 +	for ( i = 0; i < MAX_LOCAL_PLAYERS; i++ ) {
 +		cl_localPlayers[ i ].dropped = qfalse;
 +	}
- 
++
  	// if we are already connected to the local host, stay connected
  	if ( cls.state >= CA_CONNECTED && !Q_stricmp( cls.servername, "localhost" ) ) {
-@@ -1094,6 +1500,17 @@
+ 		cls.state = CA_CONNECTED;		// so the connect screen is drawn
+@@ -1094,6 +1523,17 @@
  		Com_Memset( clc.serverMessage, 0, sizeof( clc.serverMessage ) );
  		Com_Memset( &cl.gameState, 0, sizeof( cl.gameState ) );
  		clc.lastPacketSentTime = cls.realtime - RETRANSMIT_TIMEOUT; // send packet immediately
@@ -905,7 +928,7 @@
  		cls.framecount++;
  		SCR_UpdateScreen();
  	} else {
-@@ -1111,6 +1528,11 @@
+@@ -1111,6 +1551,11 @@
  		CL_CheckForResend();
  	}
  
@@ -917,7 +940,7 @@
  	return qtrue;
  }
  
-@@ -1202,6 +1624,7 @@
+@@ -1202,6 +1647,7 @@
  qboolean CL_Disconnect( qboolean showMainMenu ) {
  	static qboolean cl_disconnecting = qfalse;
  	qboolean cl_restarted = qfalse;
@@ -925,7 +948,7 @@
  
  	if ( !com_cl_running || !com_cl_running->integer ) {
  		return cl_restarted;
-@@ -1213,6 +1636,10 @@
+@@ -1213,6 +1659,10 @@
  
  	cl_disconnecting = qtrue;
  
@@ -936,7 +959,7 @@
  	// Stop demo recording
  	if ( clc.demorecording ) {
  		CL_StopRecord_f();
-@@ -1265,6 +1692,14 @@
+@@ -1265,6 +1715,14 @@
  		return qfalse;
  	}
  
@@ -951,16 +974,16 @@
  	// send a disconnect message to the server
  	// send it a few times in case one is dropped
  	if ( cls.state >= CA_CONNECTED && cls.state != CA_CINEMATIC && !clc.demoplaying ) {
-@@ -1784,6 +2219,8 @@
- =================
+@@ -1785,6 +2243,8 @@
  */
  static void CL_Vid_Restart( refShutdownCode_t shutdownCode ) {
-+
-+	CL_SetLocalPlayer( 0 ); // PS5: split screen
  
++	CL_SetLocalPlayer( 0 ); // PS5: split screen
++
  	// Settings may have changed so stop recording now
  	if ( CL_VideoRecording() )
-@@ -1827,6 +2264,8 @@
+ 		CL_CloseAVI( qfalse );
+@@ -1827,6 +2287,8 @@
  		CL_InitCGame();
  		// send pure checksums
  		CL_SendPureChecksums();
@@ -969,7 +992,7 @@
  	}
  
  	cls.startCgame = qfalse;
-@@ -2303,10 +2742,10 @@
+@@ -2303,10 +2765,10 @@
  
  	case CA_CHALLENGING:
  		// sending back the challenge
@@ -982,7 +1005,7 @@
  
  		// remove some non-important keys that may cause overflow during connection
  		if ( strlen( info ) > MAX_USERINFO_LENGTH - 64 ) {
-@@ -2346,6 +2785,12 @@
+@@ -2346,6 +2808,12 @@
  		len = Com_sprintf( data, sizeof( data ), "connect \"%s\"", info );
  		// NOTE TTimo don't forget to set the right data length!
  		NET_OutOfBandCompress( NS_CLIENT, &clc.serverAddress, (byte *) &data[0], len );
@@ -995,7 +1018,7 @@
  		// the most current userinfo has been sent, so watch for any
  		// newer changes to userinfo variables
  		cvar_modifiedFlags &= ~CVAR_USERINFO;
-@@ -2753,7 +3198,7 @@
+@@ -2753,7 +3221,7 @@
  			}
  		}
  
@@ -1004,7 +1027,7 @@
  
  		cls.state = CA_CONNECTED;
  		clc.lastPacketSentTime = cls.realtime - RETRANSMIT_TIMEOUT; // send first packet immediately
-@@ -2896,6 +3341,12 @@
+@@ -2896,6 +3364,12 @@
  		&& cls.state >= CA_CONNECTED && cls.state != CA_CINEMATIC
  		&& cls.realtime - clc.lastPacketTime > cl_timeout->integer * 1000 ) {
  		if ( ++cl.timeoutcount > 5 ) { // timeoutcount saves debugger
@@ -1017,7 +1040,7 @@
  			Com_Printf( "\nServer connection timed out.\n" );
  			Cvar_Set( "com_errorMessage", "Server connection timed out." );
  			if ( !CL_Disconnect( qfalse ) ) { // restart client if not done already
-@@ -2959,6 +3410,17 @@
+@@ -2959,6 +3433,17 @@
  	if ( CL_CheckPaused() )
  		return;
  
@@ -1035,7 +1058,7 @@
  	// send a reliable userinfo update if needed
  	if ( cvar_modifiedFlags & CVAR_USERINFO )
  	{
-@@ -2983,6 +3445,7 @@
+@@ -2983,6 +3468,7 @@
  ==================
  */
  void CL_Frame( int msec, int realMsec ) {
@@ -1043,7 +1066,7 @@
  
  #ifdef USE_CURL
  	if ( download.cURL ) {
-@@ -2994,6 +3457,10 @@
+@@ -2994,6 +3480,10 @@
  		return;
  	}
  
@@ -1054,19 +1077,22 @@
  	// save the msec before checking pause
  	cls.realFrametime = realMsec;
  
-@@ -3094,27 +3561,51 @@
+@@ -3094,26 +3584,51 @@
  		SCR_DebugGraph( msec * 0.25f );
  	}
  
 -	// see if we need to update any userinfo
 -	CL_CheckUserinfo();
-+	// PS5: split screen, the other local players join or leave
-+	CL_SplitSync();
- 
+-
 -	// if we haven't gotten a packet in a long time, drop the connection
 -	if ( !clc.demoplaying ) {
 -		CL_CheckTimeout();
 -	}
++	// PS5: split screen, the other local players join or leave
++	CL_SplitSync();
+ 
+-	// send intentions now
+-	CL_SendCmd();
 +	// PS5: each local player's connection and game, player 1's first
 +	for ( i = 0; i < MAX_LOCAL_PLAYERS; i++ ) {
 +		if ( i > 0 && cl_localPlayers[ i ].state <= CA_DISCONNECTED ) {
@@ -1074,20 +1100,18 @@
 +		}
 +		CL_SetLocalPlayer( i );
  
--	// send intentions now
--	CL_SendCmd();
+-	// resend a connection request if necessary
+-	CL_CheckForResend();
 +		// see if we need to update any userinfo
 +		CL_CheckUserinfo();
  
--	// resend a connection request if necessary
--	CL_CheckForResend();
+-	// decide on the serverTime to render
+-	CL_SetCGameTime();
 +		// if we haven't gotten a packet in a long time, drop the connection
 +		if ( !clc.demoplaying ) {
 +			CL_CheckTimeout();
 +		}
- 
--	// decide on the serverTime to render
--	CL_SetCGameTime();
++
 +		// send intentions now
 +		CL_SendCmd();
 +
@@ -1103,22 +1127,22 @@
 +		CL_SetCGameTime();
 +	}
 +	CL_SetLocalPlayer( 0 );
++	CL_SplitScores();
  
  	// update the screen
  	cls.framecount++;
  	SCR_UpdateScreen();
- 
++
 +	// PS5: split screen, the players the server let go leave
 +	for ( i = 1; i < MAX_LOCAL_PLAYERS; i++ ) {
 +		if ( cl_localPlayers[ i ].dropped && cl_localPlayers[ i ].state > CA_DISCONNECTED ) {
 +			CL_SplitLeave( i );
 +		}
 +	}
-+
+ 
  	// update audio
  	S_Update( realMsec );
- 
-@@ -3888,10 +4379,17 @@
+@@ -3888,10 +4403,17 @@
  void CL_Init( void ) {
  	const char *s;
  	cvar_t *cv;
@@ -1136,7 +1160,7 @@
  
  	CL_ClearState();
  	cls.state = CA_DISCONNECTED;	// no longer CA_UNINITIALIZED
-@@ -4008,6 +4506,19 @@
+@@ -4008,6 +4530,19 @@
  
  	cl_reconnectArgs = Cvar_Get( "cl_reconnectArgs", "", CVAR_ARCHIVE_ND | CVAR_NOTABCOMPLETE );
  
@@ -1156,7 +1180,7 @@
  	// userinfo
  	Cvar_Get ("name", "UnnamedPlayer", CVAR_USERINFO | CVAR_ARCHIVE_ND );
  	Cvar_Get ("rate", "25000", CVAR_USERINFO | CVAR_ARCHIVE );
-@@ -4067,6 +4578,7 @@
+@@ -4067,6 +4602,7 @@
  	Cmd_AddCommand ("stopvideo", CL_StopVideo_f );
  	Cmd_AddCommand ("serverinfo", CL_Serverinfo_f );
  	Cmd_AddCommand ("systeminfo", CL_Systeminfo_f );
@@ -1164,7 +1188,7 @@
  
  #ifdef USE_CURL
  	Cmd_AddCommand( "download", CL_Download_f );
-@@ -4120,6 +4632,7 @@
+@@ -4120,6 +4656,7 @@
  	Con_Shutdown();
  
  	Cmd_RemoveCommand ("cmd");
@@ -1184,10 +1208,11 @@
  		return;
  	}
  
-@@ -585,6 +586,15 @@
+@@ -584,6 +585,15 @@
+ 	clc.clientNum = MSG_ReadLong(msg);
  	// read the checksum feed
  	clc.checksumFeed = MSG_ReadLong( msg );
- 
++
 +	if ( cl_localPlayer ) {
 +		// PS5: split screen. Another local player: the server and its files are player
 +		// 1's, and they load the map once player 1 has (CL_SplitLoad).
@@ -1196,11 +1221,22 @@
 +		cl_lp->loadPending = qtrue;
 +		return;
 +	}
-+
+ 
  	// save old gamedir
  	Cvar_VariableStringBuffer( "fs_game", oldGame, sizeof( oldGame ) );
+@@ -803,6 +813,11 @@
+ 	index = seq & (MAX_RELIABLE_COMMANDS-1);
+ 	Q_strncpyz( clc.serverCommands[ index ], s, sizeof( clc.serverCommands[ index ] ) );
+ 	clc.serverCommandsIgnore[ index ] = qfalse;
++
++	// PS5: split screen, player 1's scores are the scoreboard's too (SCR_DrawSplitScoreboard)
++	if ( cl_localPlayer == 0 && !strncmp( s, "scores ", 7 ) ) {
++		SCR_ParseScores( s );
++	}
  
-@@ -812,6 +822,11 @@
+ #ifdef USE_CURL
+ 	if ( !clc.cURLUsed )
+@@ -812,6 +827,11 @@
  	if ( ( !cgvm && cls.state == CA_CONNECTED && clc.download != FS_INVALID_HANDLE ) || ( cgvm && cls.state == CA_PRIMED ) ) {
  		const char *text;
  		Cmd_TokenizeString( s );
@@ -1214,7 +1250,20 @@
  			Cvar_Set( "com_errorMessage", text );
 --- a/code/client/cl_scrn.c
 +++ b/code/client/cl_scrn.c
-@@ -511,9 +511,94 @@
+@@ -489,7 +489,12 @@
+ SCR_Init
+ ==================
+ */
++static void SCR_ClearScoreboard( void );
++
+ void SCR_Init( void ) {
++	// PS5: split screen, the scoreboard's pictures and scores are this renderer's and map's
++	SCR_ClearScoreboard();
++
+ 	cl_timegraph = Cvar_Get ("timegraph", "0", CVAR_CHEAT);
+ 	cl_debuggraph = Cvar_Get ("debuggraph", "0", CVAR_CHEAT);
+ 	cl_graphheight = Cvar_Get ("graphheight", "32", CVAR_CHEAT);
+@@ -511,9 +516,399 @@
  
  
  //=======================================================
@@ -1266,6 +1315,306 @@
 +
 +
 +/*
++=================================================================
++
++PS5: SPLIT SCREEN SCOREBOARD
++
++Three players leave a quarter of the screen: it shows the scoreboard, as the
++game draws its own (the same pictures and columns in a 640x480 layout, moved
++left by SB_LEFT so a name has sixteen letters), for everyone. Player 1's connection asks for the scores once a second
++(CL_SplitScores) and the game's answer, the "scores" command, comes here
++too (SCR_ParseScores); the names, teams, models and bots' skills are the
++configstrings'.
++
++=================================================================
++*/
++
++#define SB_HEADER			86
++#define SB_TOP				( SB_HEADER + 32 )
++#define SB_STATUSBAR		420
++#define SB_NORMAL_HEIGHT	40
++#define SB_INTER_HEIGHT		16
++#define SB_RATING_WIDTH		( 6 * BIGCHAR_WIDTH )
++#define SB_LEFT				40
++#define SB_BOTICON_X		( 32 + SB_RATING_WIDTH / 2 - SB_LEFT )
++#define SB_HEAD_X			( 64 + SB_RATING_WIDTH / 2 - SB_LEFT )
++#define SB_SCORELINE_X		( 112 - SB_LEFT )
++#define SB_SCORE_X			( SB_SCORELINE_X + BIGCHAR_WIDTH )
++#define SB_PING_X			( SB_SCORELINE_X + 12 * BIGCHAR_WIDTH + 8 )
++#define SB_TIME_X			( SB_SCORELINE_X + 17 * BIGCHAR_WIDTH + 8 )
++#define SB_NAME_X			( SB_SCORELINE_X + 22 * BIGCHAR_WIDTH )
++
++static struct {
++	int			count;
++	int			teamScores[2];
++	struct {
++		int		client, score, ping, time;
++	} scores[MAX_CLIENTS];
++
++	qhandle_t	score, ping, time, name;
++	qhandle_t	skills[5];
++	qhandle_t	icons[MAX_CLIENTS];
++	char		models[MAX_CLIENTS][MAX_QPATH];	// the model each icon is
++
++	float		x, y, scaleX, scaleY;	// the quarter, and its 640x480's scale
++} scr_board;
++
++
++static void SCR_ClearScoreboard( void ) {
++	Com_Memset( &scr_board, 0, sizeof( scr_board ) );
++}
++
++
++/*
++==================
++SCR_ParseScores
++
++The game's "scores" command: the count, the teams' scores, then fourteen
++numbers a player, sorted, of which the client, score, ping and time are used.
++==================
++*/
++void SCR_ParseScores( const char *s ) {
++	int numbers[3 + MAX_CLIENTS * 14];
++	int count, i;
++	char *end;
++
++	s += strlen( "scores" );
++	for ( count = 0; count < ARRAY_LEN( numbers ); count++ ) {
++		numbers[count] = strtol( s, &end, 10 );
++		if ( end == s ) {
++			break;
++		}
++		s = end;
++	}
++	if ( count < 3 ) {
++		return;
++	}
++
++	scr_board.count = MIN( numbers[0], ( count - 3 ) / 14 );
++	scr_board.teamScores[0] = numbers[1];
++	scr_board.teamScores[1] = numbers[2];
++	for ( i = 0; i < scr_board.count; i++ ) {
++		scr_board.scores[i].client = numbers[3 + i * 14];
++		scr_board.scores[i].score = numbers[3 + i * 14 + 1];
++		scr_board.scores[i].ping = numbers[3 + i * 14 + 2];
++		scr_board.scores[i].time = numbers[3 + i * 14 + 3];
++	}
++}
++
++
++// the quarter's 640x480 to pixels, stretched as the game's own screens are
++static void SCR_BoardPic( float x, float y, float w, float h, qhandle_t shader ) {
++	re.DrawStretchPic( scr_board.x + x * scr_board.scaleX, scr_board.y + y * scr_board.scaleY,
++		w * scr_board.scaleX, h * scr_board.scaleY, 0, 0, 1, 1, shader );
++}
++
++
++static void SCR_BoardFill( float x, float y, float w, float h, const float *color ) {
++	re.SetColor( color );
++	SCR_BoardPic( x, y, w, h, cls.whiteShader );
++	re.SetColor( NULL );
++}
++
++
++// a line in the big font with its drop shadow and colours, as CG_DrawBigString
++static void SCR_BoardString( int x, int y, const char *string ) {
++	const float shadow[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
++	vec4_t color;
++	const char *s;
++	float row, col;
++	int pass, xx, ch;
++
++	for ( pass = 0; pass < 2; pass++ ) {
++		re.SetColor( pass ? g_color_table[ ColorIndex( COLOR_WHITE ) ] : shadow );
++		for ( s = string, xx = x + ( pass ? 0 : 2 ); *s; s++ ) {
++			if ( Q_IsColorString( s ) ) {
++				if ( pass ) {
++					Com_Memcpy( color, g_color_table[ ColorIndexFromChar( s[1] ) ], sizeof( color ) );
++					re.SetColor( color );
++				}
++				s++;
++				continue;
++			}
++			ch = *s & 255;
++			if ( ch != ' ' ) {
++				row = ( ch >> 4 ) * 0.0625f;
++				col = ( ch & 15 ) * 0.0625f;
++				re.DrawStretchPic( scr_board.x + xx * scr_board.scaleX, scr_board.y + ( y + ( pass ? 0 : 2 ) ) * scr_board.scaleY,
++					BIGCHAR_WIDTH * scr_board.scaleX, BIGCHAR_HEIGHT * scr_board.scaleY,
++					col, row, col + 0.0625f, row + 0.0625f, cls.charSetShader );
++			}
++			xx += BIGCHAR_WIDTH;
++		}
++	}
++	re.SetColor( NULL );
++}
++
++
++static void SCR_BoardCentered( int y, const char *string ) {
++	char clean[MAX_STRING_CHARS];
++
++	Q_strncpyz( clean, string, sizeof( clean ) );
++	Q_CleanStr( clean );
++	SCR_BoardString( ( 640 - (int)strlen( clean ) * BIGCHAR_WIDTH ) / 2, y, string );
++}
++
++
++// a client's icon: its model's (models/players/<model>/icon_<skin>), loaded once a model
++static qhandle_t SCR_BoardIcon( int client, const char *model ) {
++	char base[MAX_QPATH], *skin;
++
++	if ( scr_board.icons[client] && !Q_stricmp( scr_board.models[client], model ) ) {
++		return scr_board.icons[client];
++	}
++	Q_strncpyz( scr_board.models[client], model, sizeof( scr_board.models[client] ) );
++	Q_strncpyz( base, *model ? model : "sarge", sizeof( base ) );
++	skin = strchr( base, '/' );
++	if ( skin ) {
++		*skin++ = '\0';
++	}
++	scr_board.icons[client] = re.RegisterShaderNoMip( va( "models/players/%s/icon_%s", base, skin && *skin ? skin : "default" ) );
++	return scr_board.icons[client];
++}
++
++
++// one player's line; returns qfalse for a player not on the team asked for
++static qboolean SCR_BoardLine( int i, int team, int y, int lineHeight ) {
++	static const float localColors[MAX_LOCAL_PLAYERS][4] = {
++		{ 0.0f, 0.0f, 0.7f, 0.7f }, { 0.7f, 0.0f, 0.0f, 0.7f }, { 0.0f, 0.55f, 0.0f, 0.7f }, { 0.7f, 0.0f, 0.55f, 0.7f } };
++	const int client = scr_board.scores[i].client;
++	const char *info;
++	int player, skill, size;
++
++	if ( (unsigned)client >= MAX_CLIENTS ) {
++		return qfalse;
++	}
++	info = cl.gameState.stringData + cl.gameState.stringOffsets[ CS_PLAYERS + client ];
++	if ( atoi( Info_ValueForKey( info, "t" ) ) != team ) {
++		return qfalse;
++	}
++
++	// the players on the console, each in their own colour, as P1, P2...
++	for ( player = 0; player < CL_SplitViews(); player++ ) {
++		if ( CL_PlayerState( player ) >= CA_PRIMED && cl_localPlayers[ player ].connection.clientNum == client ) {
++			SCR_BoardFill( SB_SCORELINE_X + BIGCHAR_WIDTH + SB_RATING_WIDTH / 2, y,
++				640 - SB_SCORELINE_X - BIGCHAR_WIDTH, BIGCHAR_HEIGHT + 1, localColors[ player ] );
++			SCR_BoardString( SB_BOTICON_X, y, va( "P%i", player + 1 ) );
++			break;
++		}
++	}
++
++	size = lineHeight == SB_NORMAL_HEIGHT ? 32 : 16;
++	skill = atoi( Info_ValueForKey( info, "skill" ) );
++	if ( skill >= 1 && skill <= 5 ) {
++		SCR_BoardPic( SB_BOTICON_X, size == 32 ? y - ( 32 - BIGCHAR_HEIGHT ) / 2 : y, size, size, scr_board.skills[ skill - 1 ] );
++	}
++	size = lineHeight == SB_NORMAL_HEIGHT ? 48 : 16;
++	SCR_BoardPic( SB_HEAD_X, size == 48 ? y - ( 48 - BIGCHAR_HEIGHT ) / 2 : y, size, size, SCR_BoardIcon( client, Info_ValueForKey( info, "model" ) ) );
++
++	if ( scr_board.scores[i].ping == -1 ) {
++		SCR_BoardString( SB_SCORELINE_X + SB_RATING_WIDTH / 2, y, va( " connecting    %s", Info_ValueForKey( info, "n" ) ) );
++	} else if ( team == TEAM_SPECTATOR ) {
++		SCR_BoardString( SB_SCORELINE_X + SB_RATING_WIDTH / 2, y, va( " SPECT %3i %4i %s", scr_board.scores[i].ping, scr_board.scores[i].time, Info_ValueForKey( info, "n" ) ) );
++	} else {
++		SCR_BoardString( SB_SCORELINE_X + SB_RATING_WIDTH / 2, y, va( "%5i %4i %4i %s", scr_board.scores[i].score, scr_board.scores[i].ping, scr_board.scores[i].time, Info_ValueForKey( info, "n" ) ) );
++	}
++	return qtrue;
++}
++
++
++// a team's lines, on its colour in a team game; returns how many
++static int SCR_BoardTeam( int team, int y, int lineHeight, int *room ) {
++	static const float red[4] = { 1.0f, 0.0f, 0.0f, 0.33f }, blue[4] = { 0.0f, 0.0f, 1.0f, 0.33f };
++	int i, n;
++
++	for ( i = n = 0; i < scr_board.count && n < *room; i++ ) {
++		if ( SCR_BoardLine( i, team, y + n * lineHeight, lineHeight ) ) {
++			n++;
++		}
++	}
++	if ( n && ( team == TEAM_RED || team == TEAM_BLUE ) ) {
++		SCR_BoardFill( 0, y - ( lineHeight == SB_NORMAL_HEIGHT ? 16 : 8 ), 640, n * lineHeight + 16, team == TEAM_RED ? red : blue );
++	}
++	*room -= n;
++	return n;
++}
++
++
++/*
++==================
++SCR_DrawSplitScoreboard
++
++The scoreboard in a quarter of the screen with player 1 current.
++==================
++*/
++static void SCR_DrawSplitScoreboard( int quarter ) {
++	static const char *const gametypes[] = { "Free For All", "Tournament", "Single Player", "Team Deathmatch", "Capture the Flag" };
++	const char *serverInfo = cl.gameState.stringData + cl.gameState.stringOffsets[ CS_SERVERINFO ];
++	const int gametype = atoi( Info_ValueForKey( serverInfo, "g_gametype" ) );
++	int x, y, w, h, i, lineHeight, room;
++	const char *s;
++
++	if ( !scr_board.score ) {
++		scr_board.score = re.RegisterShaderNoMip( "menu/tab/score.tga" );
++		scr_board.ping = re.RegisterShaderNoMip( "menu/tab/ping.tga" );
++		scr_board.time = re.RegisterShaderNoMip( "menu/tab/time.tga" );
++		scr_board.name = re.RegisterShaderNoMip( "menu/tab/name.tga" );
++		for ( i = 0; i < 5; i++ ) {
++			scr_board.skills[i] = re.RegisterShaderNoMip( va( "menu/art/skill%i", i + 1 ) );
++		}
++	}
++
++	CL_PlayerView( quarter, &x, &y, &w, &h );
++	scr_board.x = x;
++	scr_board.y = y;
++	scr_board.scaleX = w / 640.0f;
++	scr_board.scaleY = h / 480.0f;
++
++	// the game, and its limit or the teams' scores
++	SCR_BoardCentered( 28, gametype >= 0 && gametype < ARRAY_LEN( gametypes ) ? gametypes[ gametype ] : "Scores" );
++	if ( gametype >= GT_TEAM ) {
++		if ( scr_board.teamScores[0] == scr_board.teamScores[1] ) {
++			s = va( "Teams are tied at %i", scr_board.teamScores[0] );
++		} else if ( scr_board.teamScores[0] > scr_board.teamScores[1] ) {
++			s = va( S_COLOR_RED "Red" S_COLOR_WHITE " leads %i to %i", scr_board.teamScores[0], scr_board.teamScores[1] );
++		} else {
++			s = va( S_COLOR_BLUE "Blue" S_COLOR_WHITE " leads %i to %i", scr_board.teamScores[1], scr_board.teamScores[0] );
++		}
++	} else if ( atoi( Info_ValueForKey( serverInfo, "fraglimit" ) ) > 0 ) {
++		s = va( "Frag limit %s", Info_ValueForKey( serverInfo, "fraglimit" ) );
++	} else {
++		s = "";
++	}
++	SCR_BoardCentered( 52, s );
++
++	SCR_BoardPic( SB_SCORE_X + SB_RATING_WIDTH / 2, SB_HEADER, 64, 32, scr_board.score );
++	SCR_BoardPic( SB_PING_X - SB_RATING_WIDTH / 2, SB_HEADER, 64, 32, scr_board.ping );
++	SCR_BoardPic( SB_TIME_X - SB_RATING_WIDTH / 2, SB_HEADER, 64, 32, scr_board.time );
++	SCR_BoardPic( SB_NAME_X - SB_RATING_WIDTH / 2, SB_HEADER, 64, 32, scr_board.name );
++
++	// as the game: forty units a line, or sixteen for more than fit
++	if ( scr_board.count > ( SB_STATUSBAR - SB_TOP ) / SB_NORMAL_HEIGHT ) {
++		lineHeight = SB_INTER_HEIGHT;
++		room = ( SB_STATUSBAR - SB_TOP ) / SB_INTER_HEIGHT - 1;
++	} else {
++		lineHeight = SB_NORMAL_HEIGHT;
++		room = ( SB_STATUSBAR - SB_TOP ) / SB_NORMAL_HEIGHT;
++	}
++
++	y = SB_TOP;
++	if ( gametype >= GT_TEAM ) {
++		const int first = scr_board.teamScores[0] >= scr_board.teamScores[1] ? TEAM_RED : TEAM_BLUE;
++		y += lineHeight / 2;
++		y += SCR_BoardTeam( first, y, lineHeight, &room ) * lineHeight + BIGCHAR_HEIGHT;
++		y += SCR_BoardTeam( first == TEAM_RED ? TEAM_BLUE : TEAM_RED, y, lineHeight, &room ) * lineHeight + BIGCHAR_HEIGHT;
++	} else {
++		y += SCR_BoardTeam( TEAM_FREE, y, lineHeight, &room ) * lineHeight + BIGCHAR_HEIGHT;
++	}
++	SCR_BoardTeam( TEAM_SPECTATOR, y, lineHeight, &room );
++}
++
++
++/*
 +==================
 +SCR_DrawPlayerViews
 +
@@ -1300,6 +1649,11 @@
 +	}
 +	CL_SetLocalPlayer( 0 );
 +
++	// three players leave the last quarter to the scoreboard
++	if ( views == 3 && cls.state == CA_ACTIVE ) {
++		SCR_DrawSplitScoreboard( 3 );
++	}
++
 +	SCR_DrawDemoRecording();
 +}
 +
@@ -1309,7 +1663,7 @@
  SCR_DrawScreenField
  
  This will be called twice if rendering in stereo mode
-@@ -521,6 +606,7 @@
+@@ -521,6 +916,7 @@
  */
  static void SCR_DrawScreenField( stereoFrame_t stereoFrame ) {
  	qboolean uiFullscreen;
@@ -1317,7 +1671,7 @@
  
  	re.BeginFrame( stereoFrame );
  
-@@ -541,7 +627,10 @@
+@@ -541,7 +937,10 @@
  
  	// if the menu is going to cover the entire screen, we
  	// don't need to render anything under it
@@ -1329,7 +1683,7 @@
  		switch( cls.state ) {
  		default:
  			Com_Error( ERR_FATAL, "SCR_DrawScreenField: bad cls.state" );
-@@ -597,6 +686,8 @@
+@@ -597,6 +996,8 @@
  	if ( cl_debuggraph->integer || cl_timegraph->integer || cl_debugMove->integer ) {
  		SCR_DrawDebugGraph ();
  	}
@@ -1373,7 +1727,7 @@
 +Player 1 (0) is the client as it always was. The others connect to the local
 +server beside player 1, on loopback channels of their own, when a local map
 +starts with cl_splitPlayers above 1, and each has a part of the screen.
-+
+ 
 +==================================================================
 +*/
 +
@@ -1387,7 +1741,7 @@
 +	qboolean			dropped;		// the server let this player go: out until the next map
 +	char				userinfo[MAX_INFO_STRING];	// as last sent (players 2 and on)
 +} localPlayer_t;
- 
++
 +extern	localPlayer_t	cl_localPlayers[MAX_LOCAL_PLAYERS];
 +extern	localPlayer_t	*cl_lp;			// the current player's
 +extern	int				cl_localPlayer;	// the current player: 0 is player 1
@@ -1412,6 +1766,14 @@
 -extern	vm_t			*cgvm;	// interface to cgame dll or vm
  extern	vm_t			*uivm;	// interface to ui dll or vm
  extern	refexport_t		re;		// interface to refresh .dll
+ 
+@@ -528,6 +562,7 @@
+ void	SCR_UpdateScreen( void );
+ 
+ void	SCR_DebugGraph( float value );
++void	SCR_ParseScores( const char *s );	// PS5: split screen, the game's "scores" command
+ 
+ int		SCR_GetBigStringWidth( const char *str );	// returns in virtual 640x480 coordinates
  
 --- a/code/client/snd_dma.c
 +++ b/code/client/snd_dma.c

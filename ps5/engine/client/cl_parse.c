@@ -814,6 +814,11 @@ static void CL_ParseCommandString( msg_t *msg ) {
 	Q_strncpyz( clc.serverCommands[ index ], s, sizeof( clc.serverCommands[ index ] ) );
 	clc.serverCommandsIgnore[ index ] = qfalse;
 
+	// PS5: split screen, player 1's scores are the scoreboard's too (SCR_DrawSplitScoreboard)
+	if ( cl_localPlayer == 0 && !strncmp( s, "scores ", 7 ) ) {
+		SCR_ParseScores( s );
+	}
+
 #ifdef USE_CURL
 	if ( !clc.cURLUsed )
 #endif

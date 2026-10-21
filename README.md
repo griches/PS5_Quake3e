@@ -23,7 +23,7 @@ or read it in the console's log; nothing else is claimed.
 | Start-up and exit | Boots to the menu, loads all nine pak files, quits cleanly to the home screen | |
 | Rendering | Single player plays at 3840x2160 on a 59.94 Hz display | Whether it holds 60 fps everywhere; 120 Hz (the test display stayed at 60) |
 | Video modes | The menu lists 3840x2160, 2560x1440 and 1920x1080; a live switch to 1920x1080 went through | 2560x1440 |
-| Split screen | Two, three and four players, 2026-10-21: each joins and plays; four players and three bots started from the menu; a locked 120 fps at 3840x2160 on a 120 Hz display with one to four players and three bots (q3dm4, q3dm17), never a missed refresh | Players 3 and 4 on their own controllers; team games; how far past 120 it could go |
+| Split screen | Two, three and four players, 2026-10-21: each joins and plays; four players and three bots started from the menu; three players' scoreboard quarter, free for all and team deathmatch (players 2 and 3 on the teams chosen for them); a locked 120 fps at 3840x2160 on a 120 Hz display with one to four players and three bots (q3dm4, q3dm17), never a missed refresh | Players 3 and 4 on their own controllers; team games; how far past 120 it could go |
 | Input | DualSense: sticks, buttons, triggers; a button rebound in the controls menu, saved across launches. A USB mouse (movement, three buttons, the wheel) and a USB keyboard, 2026-10-11. The gyro, aiming in play and moving the menu pointer, and the touch pad's tap and double tap, 2026-10-21 | The two sensitivity sliders and invert look; the mouse speed slider; a mouse's side buttons; a Bluetooth mouse or keyboard |
 | Sound | 48 kHz stereo effects | Music (no Ogg Vorbis in this build) |
 | Network | Name lookup works; the Internet server list fills (over 1,000 servers); a server's own pak files downloaded | A full online or LAN match, start to finish |
@@ -155,7 +155,9 @@ The port's own cvars: `in_ps5LookSpeed`, `in_ps5MenuSpeed`, `in_ps5Mouse`, `in_p
 ## Split screen
 
 Two to four players play on one console: two have half the screen each, side by
-side; three or four have a quarter each.
+side; three or four have a quarter each, and with three the last quarter is the
+scoreboard, kept up to date for everyone (the players on the console marked P1,
+P2 and P3 in their controllers' colours).
 
 1. Turn on another controller for each player and press its PS button. The
    console asks who is using it: pick a user or a guest. The players after the

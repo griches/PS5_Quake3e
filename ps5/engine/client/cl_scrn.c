@@ -489,7 +489,12 @@ static void SCR_DrawDebugGraph( void )
 SCR_Init
 ==================
 */
+static void SCR_ClearScoreboard( void );
+
 void SCR_Init( void ) {
+	// PS5: split screen, the scoreboard's pictures and scores are this renderer's and map's
+	SCR_ClearScoreboard();
+
 	cl_timegraph = Cvar_Get ("timegraph", "0", CVAR_CHEAT);
 	cl_debuggraph = Cvar_Get ("debuggraph", "0", CVAR_CHEAT);
 	cl_graphheight = Cvar_Get ("graphheight", "32", CVAR_CHEAT);
@@ -559,6 +564,306 @@ static void SCR_DrawPlayerJoining( void ) {
 
 
 /*
+=================================================================
+
+PS5: SPLIT SCREEN SCOREBOARD
+
+Three players leave a quarter of the screen: it shows the scoreboard, as the
+game draws its own (the same pictures and columns in a 640x480 layout, moved
+left by SB_LEFT so a name has sixteen letters), for everyone. Player 1's connection asks for the scores once a second
+(CL_SplitScores) and the game's answer, the "scores" command, comes here
+too (SCR_ParseScores); the names, teams, models and bots' skills are the
+configstrings'.
+
+=================================================================
+*/
+
+#define SB_HEADER			86
+#define SB_TOP				( SB_HEADER + 32 )
+#define SB_STATUSBAR		420
+#define SB_NORMAL_HEIGHT	40
+#define SB_INTER_HEIGHT		16
+#define SB_RATING_WIDTH		( 6 * BIGCHAR_WIDTH )
+#define SB_LEFT				40
+#define SB_BOTICON_X		( 32 + SB_RATING_WIDTH / 2 - SB_LEFT )
+#define SB_HEAD_X			( 64 + SB_RATING_WIDTH / 2 - SB_LEFT )
+#define SB_SCORELINE_X		( 112 - SB_LEFT )
+#define SB_SCORE_X			( SB_SCORELINE_X + BIGCHAR_WIDTH )
+#define SB_PING_X			( SB_SCORELINE_X + 12 * BIGCHAR_WIDTH + 8 )
+#define SB_TIME_X			( SB_SCORELINE_X + 17 * BIGCHAR_WIDTH + 8 )
+#define SB_NAME_X			( SB_SCORELINE_X + 22 * BIGCHAR_WIDTH )
+
+static struct {
+	int			count;
+	int			teamScores[2];
+	struct {
+		int		client, score, ping, time;
+	} scores[MAX_CLIENTS];
+
+	qhandle_t	score, ping, time, name;
+	qhandle_t	skills[5];
+	qhandle_t	icons[MAX_CLIENTS];
+	char		models[MAX_CLIENTS][MAX_QPATH];	// the model each icon is
+
+	float		x, y, scaleX, scaleY;	// the quarter, and its 640x480's scale
+} scr_board;
+
+
+static void SCR_ClearScoreboard( void ) {
+	Com_Memset( &scr_board, 0, sizeof( scr_board ) );
+}
+
+
+/*
+==================
+SCR_ParseScores
+
+The game's "scores" command: the count, the teams' scores, then fourteen
+numbers a player, sorted, of which the client, score, ping and time are used.
+==================
+*/
+void SCR_ParseScores( const char *s ) {
+	int numbers[3 + MAX_CLIENTS * 14];
+	int count, i;
+	char *end;
+
+	s += strlen( "scores" );
+	for ( count = 0; count < ARRAY_LEN( numbers ); count++ ) {
+		numbers[count] = strtol( s, &end, 10 );
+		if ( end == s ) {
+			break;
+		}
+		s = end;
+	}
+	if ( count < 3 ) {
+		return;
+	}
+
+	scr_board.count = MIN( numbers[0], ( count - 3 ) / 14 );
+	scr_board.teamScores[0] = numbers[1];
+	scr_board.teamScores[1] = numbers[2];
+	for ( i = 0; i < scr_board.count; i++ ) {
+		scr_board.scores[i].client = numbers[3 + i * 14];
+		scr_board.scores[i].score = numbers[3 + i * 14 + 1];
+		scr_board.scores[i].ping = numbers[3 + i * 14 + 2];
+		scr_board.scores[i].time = numbers[3 + i * 14 + 3];
+	}
+}
+
+
+// the quarter's 640x480 to pixels, stretched as the game's own screens are
+static void SCR_BoardPic( float x, float y, float w, float h, qhandle_t shader ) {
+	re.DrawStretchPic( scr_board.x + x * scr_board.scaleX, scr_board.y + y * scr_board.scaleY,
+		w * scr_board.scaleX, h * scr_board.scaleY, 0, 0, 1, 1, shader );
+}
+
+
+static void SCR_BoardFill( float x, float y, float w, float h, const float *color ) {
+	re.SetColor( color );
+	SCR_BoardPic( x, y, w, h, cls.whiteShader );
+	re.SetColor( NULL );
+}
+
+
+// a line in the big font with its drop shadow and colours, as CG_DrawBigString
+static void SCR_BoardString( int x, int y, const char *string ) {
+	const float shadow[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+	vec4_t color;
+	const char *s;
+	float row, col;
+	int pass, xx, ch;
+
+	for ( pass = 0; pass < 2; pass++ ) {
+		re.SetColor( pass ? g_color_table[ ColorIndex( COLOR_WHITE ) ] : shadow );
+		for ( s = string, xx = x + ( pass ? 0 : 2 ); *s; s++ ) {
+			if ( Q_IsColorString( s ) ) {
+				if ( pass ) {
+					Com_Memcpy( color, g_color_table[ ColorIndexFromChar( s[1] ) ], sizeof( color ) );
+					re.SetColor( color );
+				}
+				s++;
+				continue;
+			}
+			ch = *s & 255;
+			if ( ch != ' ' ) {
+				row = ( ch >> 4 ) * 0.0625f;
+				col = ( ch & 15 ) * 0.0625f;
+				re.DrawStretchPic( scr_board.x + xx * scr_board.scaleX, scr_board.y + ( y + ( pass ? 0 : 2 ) ) * scr_board.scaleY,
+					BIGCHAR_WIDTH * scr_board.scaleX, BIGCHAR_HEIGHT * scr_board.scaleY,
+					col, row, col + 0.0625f, row + 0.0625f, cls.charSetShader );
+			}
+			xx += BIGCHAR_WIDTH;
+		}
+	}
+	re.SetColor( NULL );
+}
+
+
+static void SCR_BoardCentered( int y, const char *string ) {
+	char clean[MAX_STRING_CHARS];
+
+	Q_strncpyz( clean, string, sizeof( clean ) );
+	Q_CleanStr( clean );
+	SCR_BoardString( ( 640 - (int)strlen( clean ) * BIGCHAR_WIDTH ) / 2, y, string );
+}
+
+
+// a client's icon: its model's (models/players/<model>/icon_<skin>), loaded once a model
+static qhandle_t SCR_BoardIcon( int client, const char *model ) {
+	char base[MAX_QPATH], *skin;
+
+	if ( scr_board.icons[client] && !Q_stricmp( scr_board.models[client], model ) ) {
+		return scr_board.icons[client];
+	}
+	Q_strncpyz( scr_board.models[client], model, sizeof( scr_board.models[client] ) );
+	Q_strncpyz( base, *model ? model : "sarge", sizeof( base ) );
+	skin = strchr( base, '/' );
+	if ( skin ) {
+		*skin++ = '\0';
+	}
+	scr_board.icons[client] = re.RegisterShaderNoMip( va( "models/players/%s/icon_%s", base, skin && *skin ? skin : "default" ) );
+	return scr_board.icons[client];
+}
+
+
+// one player's line; returns qfalse for a player not on the team asked for
+static qboolean SCR_BoardLine( int i, int team, int y, int lineHeight ) {
+	static const float localColors[MAX_LOCAL_PLAYERS][4] = {
+		{ 0.0f, 0.0f, 0.7f, 0.7f }, { 0.7f, 0.0f, 0.0f, 0.7f }, { 0.0f, 0.55f, 0.0f, 0.7f }, { 0.7f, 0.0f, 0.55f, 0.7f } };
+	const int client = scr_board.scores[i].client;
+	const char *info;
+	int player, skill, size;
+
+	if ( (unsigned)client >= MAX_CLIENTS ) {
+		return qfalse;
+	}
+	info = cl.gameState.stringData + cl.gameState.stringOffsets[ CS_PLAYERS + client ];
+	if ( atoi( Info_ValueForKey( info, "t" ) ) != team ) {
+		return qfalse;
+	}
+
+	// the players on the console, each in their own colour, as P1, P2...
+	for ( player = 0; player < CL_SplitViews(); player++ ) {
+		if ( CL_PlayerState( player ) >= CA_PRIMED && cl_localPlayers[ player ].connection.clientNum == client ) {
+			SCR_BoardFill( SB_SCORELINE_X + BIGCHAR_WIDTH + SB_RATING_WIDTH / 2, y,
+				640 - SB_SCORELINE_X - BIGCHAR_WIDTH, BIGCHAR_HEIGHT + 1, localColors[ player ] );
+			SCR_BoardString( SB_BOTICON_X, y, va( "P%i", player + 1 ) );
+			break;
+		}
+	}
+
+	size = lineHeight == SB_NORMAL_HEIGHT ? 32 : 16;
+	skill = atoi( Info_ValueForKey( info, "skill" ) );
+	if ( skill >= 1 && skill <= 5 ) {
+		SCR_BoardPic( SB_BOTICON_X, size == 32 ? y - ( 32 - BIGCHAR_HEIGHT ) / 2 : y, size, size, scr_board.skills[ skill - 1 ] );
+	}
+	size = lineHeight == SB_NORMAL_HEIGHT ? 48 : 16;
+	SCR_BoardPic( SB_HEAD_X, size == 48 ? y - ( 48 - BIGCHAR_HEIGHT ) / 2 : y, size, size, SCR_BoardIcon( client, Info_ValueForKey( info, "model" ) ) );
+
+	if ( scr_board.scores[i].ping == -1 ) {
+		SCR_BoardString( SB_SCORELINE_X + SB_RATING_WIDTH / 2, y, va( " connecting    %s", Info_ValueForKey( info, "n" ) ) );
+	} else if ( team == TEAM_SPECTATOR ) {
+		SCR_BoardString( SB_SCORELINE_X + SB_RATING_WIDTH / 2, y, va( " SPECT %3i %4i %s", scr_board.scores[i].ping, scr_board.scores[i].time, Info_ValueForKey( info, "n" ) ) );
+	} else {
+		SCR_BoardString( SB_SCORELINE_X + SB_RATING_WIDTH / 2, y, va( "%5i %4i %4i %s", scr_board.scores[i].score, scr_board.scores[i].ping, scr_board.scores[i].time, Info_ValueForKey( info, "n" ) ) );
+	}
+	return qtrue;
+}
+
+
+// a team's lines, on its colour in a team game; returns how many
+static int SCR_BoardTeam( int team, int y, int lineHeight, int *room ) {
+	static const float red[4] = { 1.0f, 0.0f, 0.0f, 0.33f }, blue[4] = { 0.0f, 0.0f, 1.0f, 0.33f };
+	int i, n;
+
+	for ( i = n = 0; i < scr_board.count && n < *room; i++ ) {
+		if ( SCR_BoardLine( i, team, y + n * lineHeight, lineHeight ) ) {
+			n++;
+		}
+	}
+	if ( n && ( team == TEAM_RED || team == TEAM_BLUE ) ) {
+		SCR_BoardFill( 0, y - ( lineHeight == SB_NORMAL_HEIGHT ? 16 : 8 ), 640, n * lineHeight + 16, team == TEAM_RED ? red : blue );
+	}
+	*room -= n;
+	return n;
+}
+
+
+/*
+==================
+SCR_DrawSplitScoreboard
+
+The scoreboard in a quarter of the screen with player 1 current.
+==================
+*/
+static void SCR_DrawSplitScoreboard( int quarter ) {
+	static const char *const gametypes[] = { "Free For All", "Tournament", "Single Player", "Team Deathmatch", "Capture the Flag" };
+	const char *serverInfo = cl.gameState.stringData + cl.gameState.stringOffsets[ CS_SERVERINFO ];
+	const int gametype = atoi( Info_ValueForKey( serverInfo, "g_gametype" ) );
+	int x, y, w, h, i, lineHeight, room;
+	const char *s;
+
+	if ( !scr_board.score ) {
+		scr_board.score = re.RegisterShaderNoMip( "menu/tab/score.tga" );
+		scr_board.ping = re.RegisterShaderNoMip( "menu/tab/ping.tga" );
+		scr_board.time = re.RegisterShaderNoMip( "menu/tab/time.tga" );
+		scr_board.name = re.RegisterShaderNoMip( "menu/tab/name.tga" );
+		for ( i = 0; i < 5; i++ ) {
+			scr_board.skills[i] = re.RegisterShaderNoMip( va( "menu/art/skill%i", i + 1 ) );
+		}
+	}
+
+	CL_PlayerView( quarter, &x, &y, &w, &h );
+	scr_board.x = x;
+	scr_board.y = y;
+	scr_board.scaleX = w / 640.0f;
+	scr_board.scaleY = h / 480.0f;
+
+	// the game, and its limit or the teams' scores
+	SCR_BoardCentered( 28, gametype >= 0 && gametype < ARRAY_LEN( gametypes ) ? gametypes[ gametype ] : "Scores" );
+	if ( gametype >= GT_TEAM ) {
+		if ( scr_board.teamScores[0] == scr_board.teamScores[1] ) {
+			s = va( "Teams are tied at %i", scr_board.teamScores[0] );
+		} else if ( scr_board.teamScores[0] > scr_board.teamScores[1] ) {
+			s = va( S_COLOR_RED "Red" S_COLOR_WHITE " leads %i to %i", scr_board.teamScores[0], scr_board.teamScores[1] );
+		} else {
+			s = va( S_COLOR_BLUE "Blue" S_COLOR_WHITE " leads %i to %i", scr_board.teamScores[1], scr_board.teamScores[0] );
+		}
+	} else if ( atoi( Info_ValueForKey( serverInfo, "fraglimit" ) ) > 0 ) {
+		s = va( "Frag limit %s", Info_ValueForKey( serverInfo, "fraglimit" ) );
+	} else {
+		s = "";
+	}
+	SCR_BoardCentered( 52, s );
+
+	SCR_BoardPic( SB_SCORE_X + SB_RATING_WIDTH / 2, SB_HEADER, 64, 32, scr_board.score );
+	SCR_BoardPic( SB_PING_X - SB_RATING_WIDTH / 2, SB_HEADER, 64, 32, scr_board.ping );
+	SCR_BoardPic( SB_TIME_X - SB_RATING_WIDTH / 2, SB_HEADER, 64, 32, scr_board.time );
+	SCR_BoardPic( SB_NAME_X - SB_RATING_WIDTH / 2, SB_HEADER, 64, 32, scr_board.name );
+
+	// as the game: forty units a line, or sixteen for more than fit
+	if ( scr_board.count > ( SB_STATUSBAR - SB_TOP ) / SB_NORMAL_HEIGHT ) {
+		lineHeight = SB_INTER_HEIGHT;
+		room = ( SB_STATUSBAR - SB_TOP ) / SB_INTER_HEIGHT - 1;
+	} else {
+		lineHeight = SB_NORMAL_HEIGHT;
+		room = ( SB_STATUSBAR - SB_TOP ) / SB_NORMAL_HEIGHT;
+	}
+
+	y = SB_TOP;
+	if ( gametype >= GT_TEAM ) {
+		const int first = scr_board.teamScores[0] >= scr_board.teamScores[1] ? TEAM_RED : TEAM_BLUE;
+		y += lineHeight / 2;
+		y += SCR_BoardTeam( first, y, lineHeight, &room ) * lineHeight + BIGCHAR_HEIGHT;
+		y += SCR_BoardTeam( first == TEAM_RED ? TEAM_BLUE : TEAM_RED, y, lineHeight, &room ) * lineHeight + BIGCHAR_HEIGHT;
+	} else {
+		y += SCR_BoardTeam( TEAM_FREE, y, lineHeight, &room ) * lineHeight + BIGCHAR_HEIGHT;
+	}
+	SCR_BoardTeam( TEAM_SPECTATOR, y, lineHeight, &room );
+}
+
+
+/*
 ==================
 SCR_DrawPlayerViews
 
@@ -592,6 +897,11 @@ static void SCR_DrawPlayerViews( stereoFrame_t stereoFrame ) {
 		}
 	}
 	CL_SetLocalPlayer( 0 );
+
+	// three players leave the last quarter to the scoreboard
+	if ( views == 3 && cls.state == CA_ACTIVE ) {
+		SCR_DrawSplitScoreboard( 3 );
+	}
 
 	SCR_DrawDemoRecording();
 }

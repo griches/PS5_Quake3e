@@ -479,6 +479,29 @@ static void CL_InitSplitCGames( void ) {
 
 /*
 =====================
+CL_SplitScores
+
+With player 1 current: three players leave a quarter of the screen to the
+scoreboard (cl_scrn.c), and player 1 asks the game for the scores once a
+second for it, as the game's own scoreboard does while it is shown.
+=====================
+*/
+static void CL_SplitScores( void ) {
+	static int next;
+
+	if ( CL_SplitViews() != 3 || cls.state != CA_ACTIVE || clc.demoplaying ) {
+		return;
+	}
+	if ( next - cls.realtime > 0 && next - cls.realtime <= 1000 ) {
+		return;
+	}
+	next = cls.realtime + 1000;
+	CL_AddReliableCommand( "score", qfalse );
+}
+
+
+/*
+=====================
 CL_PlayerPacketEvent
 
 A packet on a local player's loopback channel.
@@ -3594,6 +3617,7 @@ void CL_Frame( int msec, int realMsec ) {
 		CL_SetCGameTime();
 	}
 	CL_SetLocalPlayer( 0 );
+	CL_SplitScores();
 
 	// update the screen
 	cls.framecount++;

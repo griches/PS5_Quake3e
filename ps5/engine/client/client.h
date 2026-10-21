@@ -562,6 +562,7 @@ void	SCR_Done( void );
 void	SCR_UpdateScreen( void );
 
 void	SCR_DebugGraph( float value );
+void	SCR_ParseScores( const char *s );	// PS5: split screen, the game's "scores" command
 
 int		SCR_GetBigStringWidth( const char *str );	// returns in virtual 640x480 coordinates
 
