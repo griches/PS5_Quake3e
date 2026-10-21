@@ -112,19 +112,22 @@ typedef struct
 #define ID_CHAT3		32
 #define ID_CHAT4		33
 #define ID_TOGGLEMENU	34
+#define ID_PS5GYRO		35	// PS5: g_bindings is indexed by these ids
 
 // all others
-#define ID_FREELOOK		35
-#define ID_INVERTMOUSE	36
-#define ID_ALWAYSRUN	37
-#define ID_AUTOSWITCH	38
-#define ID_MOUSESPEED	39
-#define ID_JOYENABLE	40
-#define ID_JOYTHRESHOLD	41
-#define ID_SMOOTHMOUSE	42
-#define ID_LOOKSPEEDX	43	// PS5
-#define ID_LOOKSPEEDY	44	// PS5
-#define ID_PS5MOUSESPEED	45	// PS5
+#define ID_FREELOOK		36
+#define ID_INVERTMOUSE	37
+#define ID_ALWAYSRUN	38
+#define ID_AUTOSWITCH	39
+#define ID_MOUSESPEED	40
+#define ID_JOYENABLE	41
+#define ID_JOYTHRESHOLD	42
+#define ID_SMOOTHMOUSE	43
+#define ID_LOOKSPEEDX	44	// PS5
+#define ID_LOOKSPEEDY	45	// PS5
+#define ID_PS5MOUSESPEED	46	// PS5
+#define ID_PS5GYROAIM	47	// PS5
+#define ID_PS5GYROSPEED	48	// PS5
 
 #define ANIM_IDLE		0
 #define ANIM_RUN		1
@@ -201,6 +204,9 @@ typedef struct
 	menuslider_s		lookspeedx;	// PS5: m_yaw, in tenths of its default
 	menuslider_s		lookspeedy;	// PS5: m_pitch, likewise
 	menuslider_s		mousespeed;	// PS5: in_ps5MouseSpeed, in tenths
+	menuradiobutton_s	gyroaim;	// PS5: in_ps5Gyro
+	menuslider_s		gyrospeed;	// PS5: in_ps5GyroSpeed, in tenths
+	menuaction_s		gyrotoggle;	// PS5: the ps5_gyro binding
 	menuradiobutton_s	smoothmouse;
 	menuradiobutton_s	alwaysrun;
 	menuaction_s		showscores;
@@ -267,6 +273,11 @@ ioquake3's keycodes.h, which this module is compiled with, numbers them otherwis
 // A mouse's own speed beside the stick's (the engine's in_ps5MouseSpeed, which
 // scales a mouse's movement alone): a step is a tenth, 10 a mouse as it comes.
 #define PS5_MOUSE_STEP			0.1f
+// The gyro's speed (in_ps5GyroSpeed: the view turns that many times as far as the
+// pad): a step is a tenth, 20 the default, 50 the most.
+#define PS5_GYRO_STEP			0.1f
+#define PS5_GYRO_DEFAULT_STEPS	20
+#define PS5_GYRO_MAX_STEPS		50
 
 // A key's name as the menu shows it: the console's own name for a pad key
 static void Controls_KeyName( int key, char *name, int size )
@@ -346,6 +357,7 @@ static bind_t g_bindings[] =
 	{"messagemode3", 	"chat - target",	ID_CHAT3,		ANIM_CHAT,		-1,	-1,		-1, -1},
 	{"messagemode4", 	"chat - attacker",	ID_CHAT4,		ANIM_CHAT,		-1,	-1,		-1, -1},
 	{"togglemenu", 		"toggle menu",		ID_TOGGLEMENU,	ANIM_IDLE,		-1,	-1,		-1, -1},
+	{"ps5_gyro", 		"gyro aim on / off",	ID_PS5GYRO,	ANIM_IDLE,		-1,	-1,		-1, -1},	// and a double tap on the touch pad
 	{(char*)NULL,		(char*)NULL,		0,				0,				-1,				-1,		-1,	-1},
 };
 
@@ -358,6 +370,8 @@ static configcvar_t g_configcvars[] =
 	{"m_yaw",			0,					0},
 	{"m_filter",		0,					0},
 	{"in_ps5MouseSpeed",	0,				0},
+	{"in_ps5Gyro",		0,					0},
+	{"in_ps5GyroSpeed",	0,					0},
 	{"cl_freelook",		0,					0},
 	{NULL,				0,					0}
 };
@@ -398,6 +412,9 @@ static menucommon_s *g_weapons_controls[] = {
 static menucommon_s *g_looking_controls[] = {
 	(menucommon_s *)&s_controls.lookspeedx,
 	(menucommon_s *)&s_controls.lookspeedy,
+	(menucommon_s *)&s_controls.gyroaim,
+	(menucommon_s *)&s_controls.gyrospeed,
+	(menucommon_s *)&s_controls.gyrotoggle,
 	(menucommon_s *)&s_controls.mousespeed,
 	(menucommon_s *)&s_controls.smoothmouse,
 	(menucommon_s *)&s_controls.invertmouse,
@@ -735,8 +752,9 @@ static void Controls_DrawKeyBinding( void *self )
 	int				b1;
 	int				b2;
 	qboolean		c;
-	char			name[32];
+	char			name[64];
 	char			name2[32];
+	const char		*touch;
 
 	a = (menuaction_s*) self;
 
@@ -759,6 +777,19 @@ static void Controls_DrawKeyBinding( void *self )
 
 			strcat( name, " or " );
 			strcat( name, name2 );
+		}
+	}
+
+	// PS5: what the touch pad does beside any button bound (ps5/q3/ps5_input.c)
+	touch = a->generic.id == ID_CENTERVIEW ? "TAP" : a->generic.id == ID_PS5GYRO ? "DOUBLE TAP" : NULL;
+	if (touch)
+	{
+		if (b1 == -1)
+			Q_strncpyz( name, touch, sizeof(name) );
+		else
+		{
+			Q_strncpyz( name2, name, sizeof(name2) );
+			Com_sprintf( name, sizeof(name), "%s or %s", touch, name2 );
 		}
 	}
 
@@ -804,6 +835,20 @@ Controls_StatusBar
 static void Controls_StatusBar( void *self )
 {
 	UI_DrawString(SCREEN_WIDTH * 0.50, SCREEN_HEIGHT * 0.80, "D-PAD LEFT and RIGHT, or CROSS, to change", UI_SMALLFONT|UI_CENTER, colorWhite );
+}
+
+
+/*
+=================
+Controls_MenuDraw
+
+PS5: a double tap on the touch pad switches gyro aim while the menu is up; show it
+=================
+*/
+static void Controls_MenuDraw( void )
+{
+	s_controls.gyroaim.curvalue = trap_Cvar_VariableValue( "in_ps5Gyro" ) != 0;
+	Menu_Draw( &s_controls.menu );
 }
 
 
@@ -905,6 +950,8 @@ static void Controls_GetConfig( void )
 	s_controls.mousespeed.curvalue   = UI_ClampCvar( 1, PS5_M_MAX_STEPS, (int)( Controls_GetCvarValue( "in_ps5MouseSpeed" ) / PS5_MOUSE_STEP + 0.5f ) );
 	s_controls.lookspeedy.curvalue   = UI_ClampCvar( 1, PS5_M_MAX_STEPS, (int)( fabs( Controls_GetCvarValue( "m_pitch" ) ) * Controls_GetCvarValue( "sensitivity" ) / ( PS5_M_STEP * PS5_SENSITIVITY ) + 0.5f ) );
 	s_controls.freelook.curvalue     = UI_ClampCvar( 0, 1, Controls_GetCvarValue( "cl_freelook" ) );
+	s_controls.gyroaim.curvalue      = UI_ClampCvar( 0, 1, Controls_GetCvarValue( "in_ps5Gyro" ) );
+	s_controls.gyrospeed.curvalue    = UI_ClampCvar( 1, PS5_GYRO_MAX_STEPS, (int)( Controls_GetCvarValue( "in_ps5GyroSpeed" ) / PS5_GYRO_STEP + 0.5f ) );
 }
 
 /*
@@ -947,6 +994,8 @@ static void Controls_SetConfig( void )
 	trap_Cvar_SetValue( "cg_autoswitch", s_controls.autoswitch.curvalue );
 	trap_Cvar_SetValue( "sensitivity", PS5_SENSITIVITY );
 	trap_Cvar_SetValue( "cl_freelook", s_controls.freelook.curvalue );
+	trap_Cvar_SetValue( "in_ps5Gyro", s_controls.gyroaim.curvalue );
+	trap_Cvar_SetValue( "in_ps5GyroSpeed", s_controls.gyrospeed.curvalue * PS5_GYRO_STEP );
 	trap_Cmd_ExecuteText( EXEC_APPEND, "in_restart\n" );
 }
 
@@ -980,6 +1029,9 @@ static void Controls_SetDefaults( void )
 	s_controls.lookspeedy.curvalue   = PS5_M_DEFAULT_STEPS;
 	s_controls.mousespeed.curvalue   = PS5_M_DEFAULT_STEPS;
 	s_controls.freelook.curvalue     = Controls_GetCvarDefault( "cl_freelook" );
+	s_controls.gyroaim.curvalue      = Controls_GetCvarDefault( "in_ps5Gyro" );
+	s_controls.gyrospeed.curvalue    = PS5_GYRO_DEFAULT_STEPS;
+	trap_Cvar_SetValue( "in_ps5Gyro", s_controls.gyroaim.curvalue ); // Controls_MenuDraw shows the cvar
 }
 
 /*
@@ -1208,6 +1260,15 @@ static void Controls_MenuEvent( void* ptr, int event )
 			}
 			break;
 
+		case ID_PS5GYROAIM:
+			// PS5: set at once, as a double tap on the touch pad sets it (Controls_MenuDraw)
+			if (event == QM_ACTIVATED)
+			{
+				trap_Cvar_SetValue( "in_ps5Gyro", s_controls.gyroaim.curvalue );
+				s_controls.changesmade = qtrue;
+			}
+			break;
+
 		case ID_FREELOOK:
 		case ID_MOUSESPEED:
 		case ID_INVERTMOUSE:
@@ -1217,6 +1278,7 @@ static void Controls_MenuEvent( void* ptr, int event )
 		case ID_LOOKSPEEDX:
 		case ID_LOOKSPEEDY:
 		case ID_PS5MOUSESPEED:
+		case ID_PS5GYROSPEED:
 			if (event == QM_ACTIVATED)
 			{
 				s_controls.changesmade = qtrue;
@@ -1292,6 +1354,7 @@ static void Controls_MenuInit( void )
 	Controls_Cache();
 
 	s_controls.menu.key        = Controls_MenuKey;
+	s_controls.menu.draw       = Controls_MenuDraw;
 	s_controls.menu.wrapAround = qtrue;
 	s_controls.menu.fullscreen = qtrue;
 
@@ -1632,6 +1695,30 @@ static void Controls_MenuInit( void )
 	s_controls.mousespeed.maxvalue		     = PS5_M_MAX_STEPS;
 	s_controls.mousespeed.generic.statusbar  = Controls_StatusBar;
 
+	s_controls.gyroaim.generic.type      = MTYPE_RADIOBUTTON;
+	s_controls.gyroaim.generic.flags	 = QMF_SMALLFONT;
+	s_controls.gyroaim.generic.x	     = SCREEN_WIDTH/2;
+	s_controls.gyroaim.generic.name	     = "gyro aim";
+	s_controls.gyroaim.generic.id        = ID_PS5GYROAIM;
+	s_controls.gyroaim.generic.callback  = Controls_MenuEvent;
+	s_controls.gyroaim.generic.statusbar = Controls_StatusBar;
+
+	s_controls.gyrospeed.generic.type	     = MTYPE_SLIDER;
+	s_controls.gyrospeed.generic.x		     = SCREEN_WIDTH/2;
+	s_controls.gyrospeed.generic.flags	     = QMF_SMALLFONT;
+	s_controls.gyrospeed.generic.name	     = "gyro speed";
+	s_controls.gyrospeed.generic.id 	     = ID_PS5GYROSPEED;
+	s_controls.gyrospeed.generic.callback    = Controls_MenuEvent;
+	s_controls.gyrospeed.minvalue		     = 1;
+	s_controls.gyrospeed.maxvalue		     = PS5_GYRO_MAX_STEPS;
+	s_controls.gyrospeed.generic.statusbar   = Controls_StatusBar;
+
+	s_controls.gyrotoggle.generic.type	    = MTYPE_ACTION;
+	s_controls.gyrotoggle.generic.flags     = QMF_LEFT_JUSTIFY|QMF_PULSEIFFOCUS|QMF_GRAYED|QMF_HIDDEN;
+	s_controls.gyrotoggle.generic.callback  = Controls_ActionEvent;
+	s_controls.gyrotoggle.generic.ownerdraw = Controls_DrawKeyBinding;
+	s_controls.gyrotoggle.generic.id        = ID_PS5GYRO;
+
 	s_controls.gesture.generic.type	     = MTYPE_ACTION;
 	s_controls.gesture.generic.flags     = QMF_LEFT_JUSTIFY|QMF_PULSEIFFOCUS|QMF_GRAYED|QMF_HIDDEN;
 	s_controls.gesture.generic.callback  = Controls_ActionEvent;
@@ -1707,6 +1794,9 @@ static void Controls_MenuInit( void )
 
 	Menu_AddItem( &s_controls.menu, &s_controls.lookspeedx );
 	Menu_AddItem( &s_controls.menu, &s_controls.lookspeedy );
+	Menu_AddItem( &s_controls.menu, &s_controls.gyroaim );
+	Menu_AddItem( &s_controls.menu, &s_controls.gyrospeed );
+	Menu_AddItem( &s_controls.menu, &s_controls.gyrotoggle );
 	Menu_AddItem( &s_controls.menu, &s_controls.mousespeed );
 	Menu_AddItem( &s_controls.menu, &s_controls.smoothmouse );
 	Menu_AddItem( &s_controls.menu, &s_controls.invertmouse );

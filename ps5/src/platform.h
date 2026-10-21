@@ -79,6 +79,9 @@ struct pad_reading {
    uint8_t l2, r2;                           /* 0..255 */
    bool connected;
    uint64_t timestamp_us;
+   float accel[3]; /* in g: +x right, +y out of the face, +z toward the player */
+   float gyro[3];  /* rad/s about those axes, counter-clockwise positive */
+   uint8_t touches; /* fingers on the touch pad, 0 to 2 (a touch, clicked or not) */
 };
 
 /* Every reading the last pad_poll took, oldest first (the console keeps up to

@@ -35,6 +35,8 @@ any key, so the controls menu can show and change what it does. The defaults
 
   left stick     forward and back are analog (the joystick axis), never rebound
   right stick    look (as mouse movement, so sensitivity, m_yaw, m_pitch and m_filter apply)
+  the gyro       look too while in_ps5Gyro is on (IN_GyroTurn)
+  touch pad      a tap levels the view (the gyro carries on from there), a double tap switches gyro aim
   OPTIONS        ESCAPE: the menu
   CIRCLE         ESCAPE too while connecting or loading: backs out
 
@@ -44,6 +46,8 @@ In a menu, the console or a chat line the pad is the keys those expect:
   SQUARE BACKSPACE (clears a binding)          R2 MOUSE1 (a click)
   TRIANGLE the console's on-screen keyboard (CROSS on a text field opens it too)
   both sticks    the pointer
+  the gyro       the pointer too, in a menu whether gyro aim is on or not
+  touch pad      a tap puts the pointer in the middle, a double tap switches gyro aim
 
 While the controls menu waits for a button to bind (the cvar ui_ps5WaitingForKey,
 set by ps5/ui/ui_controls2.c) the buttons are their gamepad keys again.
@@ -54,6 +58,8 @@ static cvar_t *in_ps5MenuSpeed;
 static cvar_t *in_ps5Mouse;
 static cvar_t *in_ps5MouseSpeed;
 static cvar_t *in_ps5Keyboard;
+static cvar_t *in_ps5Gyro;
+static cvar_t *in_ps5GyroSpeed;
 
 static qboolean in_open;
 static double in_last;
@@ -388,14 +394,228 @@ static void IN_OpenKeyboard_f( void )
 }
 
 
+/*
+The gyro: while in_ps5Gyro is on, the DualSense's turns in play are mouse
+movement that turns the view in_ps5GyroSpeed times as far as the pad turned
+(sensitivity, m_yaw and m_pitch are divided out, so the stick's look speeds
+leave it alone; zooming slows it as it does the stick). A menu's pointer follows
+the pad always, GYRO_MENU_STEPS of the menu's 640 by 480 for each degree, gyro
+aim on or off.
+
+The touch pad works the gyro the same in a menu and in play. A tap (a touch
+shorter than TAP_US, without a click) is the reset: hold the pad where it is
+comfortable and tap, and the pointer goes to the middle of the menu, or the view
+levels in play (centerview); the gyro carries on from the pad's place then. A
+double tap (the second tap within TAP_GAP_US of the first, which reset already)
+is ps5_gyro: gyro aim on or off. ps5_gyro can be bound to a button too (none by
+default).
+
+"Player space", as JoyShockMapper turns a pad: the yaw is the turn about the
+pad's up as gravity shows it (low-passed, carried through turns by the gyro),
+so the view turns the same with the pad held flat or tilted toward the player;
+the pitch is the turn about the pad's right-hand axis. Each half second the pad
+lies still measures the gyro's bias, and turns slower than GYRO_NOISE_GATE are
+scaled toward nothing, so a pad at rest never drifts.
+*/
+#define GYRO_NOISE_GATE		0.026f	// rad/s (1.5 degrees a second)
+#define GYRO_REST_SD		0.0175f	// rad/s (1 degree a second)
+#define GYRO_REST_SECONDS	0.5f
+#define GYRO_YAW_RELAX		1.41f
+#define GYRO_MENU_STEPS		16.0f	// pointer steps a degree (40 degrees across the menu)
+#define TAP_US				250000
+#define TAP_GAP_US			300000
+
+static struct {
+	uint64_t last_us;
+	float up[3];
+	qboolean up_valid;
+	float bias[3];
+	int rests;
+	// the half second being measured for a rest
+	double sum[3], sum_sq[3];
+	float accel_min, accel_max, window;
+	int samples;
+} in_gyro;
+
+static void IN_GyroRestWindow( const float gyro[3], float accel_length, float dt )
+{
+	qboolean rest;
+	float mean[3];
+	int k;
+
+	if ( in_gyro.samples == 0 )
+		in_gyro.accel_min = in_gyro.accel_max = accel_length;
+	for ( k = 0; k < 3; k++ ) {
+		in_gyro.sum[k] += gyro[k];
+		in_gyro.sum_sq[k] += (double)gyro[k] * gyro[k];
+	}
+	in_gyro.accel_min = MIN( in_gyro.accel_min, accel_length );
+	in_gyro.accel_max = MAX( in_gyro.accel_max, accel_length );
+	in_gyro.window += dt;
+	in_gyro.samples++;
+	if ( in_gyro.window < GYRO_REST_SECONDS || in_gyro.samples < 8 )
+		return;
+
+	rest = in_gyro.accel_max - in_gyro.accel_min < 0.05f;
+	for ( k = 0; k < 3 && rest; k++ ) {
+		const double m = in_gyro.sum[k] / in_gyro.samples;
+		const double variance = in_gyro.sum_sq[k] / in_gyro.samples - m * m;
+		mean[k] = (float)m;
+		rest = sqrt( variance > 0.0 ? variance : 0.0 ) < GYRO_REST_SD;
+		// a steady slow turn is not bias: later rests move it by 3 degrees a second at most
+		if ( rest && in_gyro.rests )
+			rest = fabsf( mean[k] - in_gyro.bias[k] ) < 0.05f;
+	}
+	if ( rest ) {
+		for ( k = 0; k < 3; k++ )
+			in_gyro.bias[k] += ( mean[k] - in_gyro.bias[k] ) * ( in_gyro.rests ? 0.3f : 1.0f );
+		in_gyro.rests++;
+	}
+	memset( in_gyro.sum, 0, sizeof( in_gyro.sum ) );
+	memset( in_gyro.sum_sq, 0, sizeof( in_gyro.sum_sq ) );
+	in_gyro.window = 0.0f;
+	in_gyro.samples = 0;
+}
+
+
+static struct {
+	qboolean down, clicked;
+	uint64_t down_us, up_us;
+	int taps;
+} in_touch;
+
+// One reading's touch: 1 when it ends a tap, 2 when that tap is the second of a double tap
+static int IN_TouchTap( const struct pad_reading *r )
+{
+	const qboolean touching = r->touches > 0;
+
+	if ( touching && !in_touch.down ) {
+		if ( r->timestamp_us - in_touch.up_us > TAP_GAP_US )
+			in_touch.taps = 0;
+		in_touch.down = qtrue;
+		in_touch.clicked = qfalse;
+		in_touch.down_us = r->timestamp_us;
+	}
+	if ( touching && ( r->buttons & PAD_TOUCH_PAD ) )
+		in_touch.clicked = qtrue;
+	if ( !touching && in_touch.down ) {
+		in_touch.down = qfalse;
+		in_touch.up_us = r->timestamp_us;
+		if ( in_touch.clicked || r->timestamp_us - in_touch.down_us > TAP_US ) {
+			in_touch.taps = 0;
+		} else if ( ++in_touch.taps == 2 ) {
+			in_touch.taps = 0;
+			return 2;
+		} else {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+
+// The pad's turn over the readings of this poll, in degrees: yaw left and pitch up positive,
+// and the touch pad's taps (IN_TouchTap's 1 or 2, 0 for none).
+// Every poll calls it, so the bias and gravity stay current while the gyro is off.
+static void IN_GyroTurn( float *yaw, float *pitch, int *taps )
+{
+	const struct pad_reading *readings;
+	const int count = pad_readings( &readings );
+	float rate[3], turn[3], length, dt, world_yaw, horizontal, y, p, speed;
+	int i, k, tap;
+
+	*yaw = *pitch = 0.0f;
+	*taps = 0;
+	for ( i = 0; i < count; i++ ) {
+		const struct pad_reading *r = &readings[i];
+
+		// the console repeats a reading between the pad's reports
+		if ( !r->connected || ( r->buttons & PAD_INTERCEPTED ) || r->timestamp_us == in_gyro.last_us )
+			continue;
+		dt = in_gyro.last_us && r->timestamp_us > in_gyro.last_us ? (float)( r->timestamp_us - in_gyro.last_us ) * 1e-6f : 0.0f;
+		dt = MIN( dt, 0.02f );
+		in_gyro.last_us = r->timestamp_us;
+		tap = IN_TouchTap( r );
+		if ( tap > *taps )
+			*taps = tap;
+		length = sqrtf( r->accel[0] * r->accel[0] + r->accel[1] * r->accel[1] + r->accel[2] * r->accel[2] );
+		if ( !( length == length ) || !( r->gyro[0] == r->gyro[0] && r->gyro[1] == r->gyro[1] && r->gyro[2] == r->gyro[2] ) )
+			continue; // not a number
+		for ( k = 0; k < 3; k++ )
+			rate[k] = r->gyro[k] - in_gyro.bias[k];
+
+		// up: carried through the turn, then drawn toward the accelerometer near 1 g
+		if ( !in_gyro.up_valid ) {
+			if ( length > 0.5f ) {
+				for ( k = 0; k < 3; k++ )
+					in_gyro.up[k] = r->accel[k] / length;
+				in_gyro.up_valid = qtrue;
+			}
+		} else {
+			CrossProduct( rate, in_gyro.up, turn );
+			for ( k = 0; k < 3; k++ )
+				in_gyro.up[k] -= turn[k] * dt;
+			if ( length > 0.8f && length < 1.2f ) {
+				for ( k = 0; k < 3; k++ )
+					in_gyro.up[k] += ( r->accel[k] / length - in_gyro.up[k] ) * ( dt / ( 0.5f + dt ) );
+			}
+			if ( VectorNormalize( in_gyro.up ) < 1e-3f )
+				VectorSet( in_gyro.up, 0.0f, 1.0f, 0.0f );
+		}
+		IN_GyroRestWindow( r->gyro, length, dt );
+		if ( !in_gyro.up_valid || dt <= 0.0f )
+			continue;
+
+		world_yaw = rate[1] * in_gyro.up[1] + rate[2] * in_gyro.up[2];
+		horizontal = sqrtf( rate[1] * rate[1] + rate[2] * rate[2] );
+		y = world_yaw * GYRO_YAW_RELAX;
+		y = Com_Clamp( -horizontal, horizontal, y );
+		p = rate[0];
+		speed = sqrtf( y * y + p * p );
+		if ( speed < GYRO_NOISE_GATE ) {
+			y *= speed / GYRO_NOISE_GATE;
+			p *= speed / GYRO_NOISE_GATE;
+		}
+		*yaw += y * dt;
+		*pitch += p * dt;
+	}
+	*yaw = RAD2DEG( *yaw );
+	*pitch = RAD2DEG( *pitch );
+}
+
+
+static void IN_ToggleGyro_f( void )
+{
+	Cvar_Set( "in_ps5Gyro", in_ps5Gyro->integer ? "0" : "1" );
+	Com_Printf( "Gyro aim %s\n", in_ps5Gyro->integer ? "on" : "off" );
+}
+
+
+// The menu's pointer to the middle of the screen: to its top left corner, then half the
+// menu's width (with its widescreen margin, as UI_MouseEvent clamps to it) and height on.
+// UI_MouseEvent is called at once, as the event queue would merge the two moves.
+static void IN_CenterPointer( void )
+{
+	const float width = cls.glconfig.vidWidth, height = cls.glconfig.vidHeight;
+	int margin = 0;
+
+	if ( !uivm || height <= 0.0f )
+		return;
+	if ( width * 480.0f > height * 640.0f )
+		margin = (int)( 0.5f * ( width - height * ( 640.0f / 480.0f ) ) / ( height / 480.0f ) );
+	CL_MouseEvent( -100000, -100000 );
+	CL_MouseEvent( 320 + margin, 240 );
+}
+
+
 void HandleEvents( void )
 {
 	struct pad pad;
 	const double now = now_seconds();
 	double dt = now - in_last;
 	qboolean menu, binding;
-	float lx, ly, rx, ry, speed;
-	int forward, dx, dy;
+	float lx, ly, rx, ry, speed, gyro_yaw, gyro_pitch, sensitivity;
+	int forward, dx, dy, taps;
 
 	in_last = now;
 	if ( !in_open )
@@ -404,6 +624,7 @@ void HandleEvents( void )
 		dt = 0.1;
 
 	pad_poll( &pad );
+	IN_GyroTurn( &gyro_yaw, &gyro_pitch, &taps );
 	if ( IN_PollKeyboard() ) {
 		IN_ReleaseAll();
 		return;
@@ -418,6 +639,10 @@ void HandleEvents( void )
 	binding = menu && Cvar_VariableIntegerValue( "ui_ps5WaitingForKey" ) != 0;
 	if ( !menu && Cvar_VariableIntegerValue( "ui_ps5WaitingForKey" ) != 0 )
 		Cvar_Set( "ui_ps5WaitingForKey", "0" ); // the menu went away mid-binding
+	if ( binding )
+		taps = 0;
+	if ( taps == 2 )
+		IN_ToggleGyro_f();
 
 	IN_Mouse();
 	IN_Keyboard();
@@ -490,6 +715,31 @@ void HandleEvents( void )
 	ry = Com_Clamp( -1.0f, 1.0f, ry );
 	in_remainder_x += rx * fabsf( rx ) * speed * (float)dt;
 	in_remainder_y += ry * fabsf( ry ) * speed * (float)dt;
+	// the gyro, in the mouse counts that turn the view by its turn times in_ps5GyroSpeed
+	// (CL_MouseMove: yaw -= m_yaw * sensitivity * dx, pitch += m_pitch * sensitivity * dy)
+	if ( taps && ( Key_GetCatcher() & KEYCATCH_UI ) ) {
+		// the reset: the pointer to the middle, and this poll's movement dropped
+		in_remainder_x = in_remainder_y = 0.0f;
+		IN_CenterPointer();
+		return;
+	}
+	if ( taps && !menu ) {
+		// the reset: the view levels, and the gyro turns it from there
+		Cbuf_AddText( "centerview\n" );
+		gyro_yaw = gyro_pitch = 0.0f;
+	}
+	sensitivity = Cvar_VariableValue( "sensitivity" );
+	if ( Key_GetCatcher() & KEYCATCH_UI ) {
+		// a menu's pointer, gyro aim on or off
+		in_remainder_x -= gyro_yaw * GYRO_MENU_STEPS;
+		in_remainder_y -= gyro_pitch * GYRO_MENU_STEPS;
+	} else if ( !menu && in_ps5Gyro->integer && sensitivity > 0.0f ) {
+		const float m_yaw = Cvar_VariableValue( "m_yaw" ), m_pitch = Cvar_VariableValue( "m_pitch" );
+		if ( m_yaw != 0.0f )
+			in_remainder_x -= gyro_yaw * in_ps5GyroSpeed->value / ( m_yaw * sensitivity );
+		if ( m_pitch != 0.0f )
+			in_remainder_y -= gyro_pitch * in_ps5GyroSpeed->value / ( m_pitch * sensitivity );
+	}
 	dx = (int)in_remainder_x;
 	dy = (int)in_remainder_y;
 	in_remainder_x -= (float)dx;
@@ -506,8 +756,11 @@ The keyboard binds of default.cfg stay beside the pad's.
   1: the binds
   2: the look sensitivity for the right stick, 4.45: what was settled on at the
      console (2026-10-10), in place of the engine's 5 for a mouse
+  3, 4: a test build (3, 2026-10-21) made the D-pad's up center the view and its
+     down switch the gyro; 4 gives them forward and back again where it did (the
+     touch pad works the gyro now)
 */
-#define PS5_BINDS_VERSION 2
+#define PS5_BINDS_VERSION 4
 #define PS5_SENSITIVITY "4.45"
 
 static void IN_DefaultBinds( void )
@@ -543,6 +796,13 @@ static void IN_DefaultBinds( void )
 	// only where the engine's own default still stands
 	if ( done->integer < 2 && Cvar_VariableValue( "sensitivity" ) == 5.0f )
 		Cvar_Set( "sensitivity", PS5_SENSITIVITY );
+	if ( done->integer == 3 ) {
+		const char *up = Key_GetBinding( K_PAD0_DPAD_UP ), *down = Key_GetBinding( K_PAD0_DPAD_DOWN );
+		if ( up && !Q_stricmp( up, "centerview" ) )
+			Key_SetBinding( K_PAD0_DPAD_UP, "+forward" );
+		if ( down && !Q_stricmp( down, "ps5_gyro" ) )
+			Key_SetBinding( K_PAD0_DPAD_DOWN, "+back" );
+	}
 	Cvar_Set( "in_ps5Binds", va( "%d", PS5_BINDS_VERSION ) );
 	Com_Printf( "PS5 pad: defaults set\n" );
 }
@@ -574,10 +834,18 @@ void IN_Init( void )
 	Cvar_SetDescription( in_ps5MouseSpeed, "PS5: a mouse's movement is multiplied by this (the right stick's is not)." );
 	in_ps5Keyboard = Cvar_Get( "in_ps5Keyboard", "1", CVAR_ARCHIVE );
 	Cvar_SetDescription( in_ps5Keyboard, "PS5: take a USB or Bluetooth keyboard's keys." );
+	in_ps5Gyro = Cvar_Get( "in_ps5Gyro", "0", CVAR_ARCHIVE );
+	Cvar_CheckRange( in_ps5Gyro, "0", "1", CV_INTEGER );
+	Cvar_SetDescription( in_ps5Gyro, "PS5: the DualSense's gyro aims too (ps5_gyro switches it)." );
+	in_ps5GyroSpeed = Cvar_Get( "in_ps5GyroSpeed", "2", CVAR_ARCHIVE );
+	Cvar_CheckRange( in_ps5GyroSpeed, "0.1", "5", CV_FLOAT );
+	Cvar_SetDescription( in_ps5GyroSpeed, "PS5: the view turns this many times as far as the DualSense." );
 
 	if ( !in_open ) {
 		// the menus' text fields ask for the keyboard with this (ps5/ui/ui_mfield.c)
 		Cmd_AddCommand( "ps5_keyboard", IN_OpenKeyboard_f );
+		// gyro aim on or off: a double tap on the touch pad, or any button bound to it
+		Cmd_AddCommand( "ps5_gyro", IN_ToggleGyro_f );
 		// the controls menu sets this while a binding waits for a button
 		Cvar_Get( "ui_ps5WaitingForKey", "0", CVAR_TEMP );
 		IN_DefaultBinds();

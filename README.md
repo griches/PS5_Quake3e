@@ -7,7 +7,8 @@
 A PS5 homebrew port of [Quake3e](https://github.com/ec-/Quake3e), an improved
 Quake III Arena engine, drawing with its Vulkan renderer on RADV through the
 [PS5 Vulkan Template](https://github.com/mihawk-99/PS5_VulkanTemplate) stack.
-It plays with the DualSense, or with a USB mouse and keyboard.
+It plays with the DualSense, with gyro aim if you want it, or with a USB mouse
+and keyboard.
 
 It needs a PS5 that already runs homebrew, and your own copy of the game's data.
 No game data, Sony software or keys are included.
@@ -22,7 +23,7 @@ or read it in the console's log; nothing else is claimed.
 | Start-up and exit | Boots to the menu, loads all nine pak files, quits cleanly to the home screen | |
 | Rendering | Single player plays at 3840x2160 on a 59.94 Hz display | Whether it holds 60 fps everywhere; 120 Hz (the test display stayed at 60) |
 | Video modes | The menu lists 3840x2160, 2560x1440 and 1920x1080; a live switch to 1920x1080 went through | 2560x1440 |
-| Input | DualSense: sticks, buttons, triggers; a button rebound in the controls menu, saved across launches. A USB mouse (movement, three buttons, the wheel) and a USB keyboard, 2026-10-11 | The two sensitivity sliders and invert look; the mouse speed slider; a mouse's side buttons; a Bluetooth mouse or keyboard |
+| Input | DualSense: sticks, buttons, triggers; a button rebound in the controls menu, saved across launches. A USB mouse (movement, three buttons, the wheel) and a USB keyboard, 2026-10-11. The gyro, aiming in play and moving the menu pointer, and the touch pad's tap and double tap, 2026-10-21 | The two sensitivity sliders and invert look; the mouse speed slider; a mouse's side buttons; a Bluetooth mouse or keyboard |
 | Sound | 48 kHz stereo effects | Music (no Ogg Vorbis in this build) |
 | Network | Name lookup works; the Internet server list fills (over 1,000 servers); a server's own pak files downloaded | A full online or LAN match, start to finish |
 | On-screen keyboard | The console's keyboard opens from a menu | The field being cleared before the typed text goes in |
@@ -38,11 +39,23 @@ Known limits:
 
 ## Install
 
+> **Read this first: a title ID shared with two PS3 emulators.** PS5SX3 and
+> KB-RPCS3, both ports of the RPCS3 PlayStation 3 emulator, use the same title ID
+> as this port, `PPSA99303`, and so the same folder, `/data/homebrew/PPSA99303`.
+> A console holds one app per title ID: installing Quake replaces the emulator,
+> and removing Quake removes the folder with the emulator's games and saves in it.
+> This has happened to players through a homebrew store. If you have either
+> emulator installed, don't install this port. Install it by hand, as below, so
+> you can see what is in `/data/homebrew/PPSA99303` before you copy anything;
+> with a store, read its warning before installing or removing. Telling apps that
+> share a title ID apart, and never overwriting or deleting another app, is for
+> each store's developers to handle.
+
 You need a PS5 that already runs homebrew: an enabler such as etaHEN,
 ShadowMountPlus (it shows titles in `/data/homebrew` on the home screen) and an FTP
 server (ftpsrv, port 2121). Setting that up is not covered here.
 
-1. **Get the title.** Download `Quake3-PS5-v1.2.0.zip` from the
+1. **Get the title.** Download `Quake3-PS5-v1.3.0.zip` from the
    [latest release](https://github.com/griches/PS5_Quake3e/releases/latest) and
    unzip it. It holds one folder, `PPSA99303`.
 2. **Get the game data** (not included, see the table below): `pak0.pk3` from your
@@ -88,6 +101,7 @@ line, for example `+connect 192.168.0.10`).
 | --- | --- | --- |
 | Left stick | Move | Pointer |
 | Right stick | Look | Pointer |
+| Turning the pad (the gyro) | Look, when gyro aim is on | Pointer, always |
 | D-pad | Arrow keys | Move between items |
 | CROSS, L3 | Jump | CROSS: select; on a text field, the on-screen keyboard |
 | CIRCLE | Crouch | Back; also backs out of connecting or loading |
@@ -96,12 +110,29 @@ line, for example `+connect 192.168.0.10`).
 | L1 / R1 | Previous / next weapon | |
 | L2 | Zoom | |
 | OPTIONS | Menu | Back |
-| Touch pad | Scores | |
+| Touch pad: click | Scores | |
+| Touch pad: tap | Level the view (the gyro's reset) | Pointer to the middle (the gyro's reset) |
+| Touch pad: double tap | Gyro aim on / off | Gyro aim on / off |
 
 These are the defaults. Every button, trigger and D-pad direction can be given
 another action in Setup, Controls (CROSS on an action, then the button; SQUARE
 clears it). The sticks and OPTIONS are fixed. Look sensitivity is two sliders,
 horizontal and vertical, with invert look beside them.
+
+**Gyro aim.** Turn the DualSense to aim, as with a mouse; the right stick still
+looks too. It is off at first. Switch it on in Setup, Controls, Look (**gyro
+aim**), or double tap the touch pad (two quick taps, not clicks) at any time; a
+double tap again switches it off. **Gyro speed** on the same page sets how far
+the view turns for each turn of the pad. In the menus the pad moves the pointer
+whether gyro aim is on or not.
+
+To reset the gyro, hold the pad where it is comfortable and tap the touch pad
+once: in play the view levels, and in a menu the pointer goes to the middle of
+the screen. The gyro carries on from where the pad is. Turning left or right has
+no fixed middle in play, so a tap levels the view but keeps the way you face.
+
+Setup, Controls shows these as **TAP** (center view) and **DOUBLE TAP** (gyro aim
+on / off). A button can be bound to either beside the touch pad.
 
 A mouse and a keyboard plugged into the console work beside the pad, bound as
 the game binds them by default (W, A, S and D, fire on the left button, the
@@ -114,6 +145,7 @@ the stick's and the mouse's alike. `in_ps5Mouse 0` and
 `in_ps5Keyboard 0` turn them off.
 
 The port's own cvars: `in_ps5LookSpeed`, `in_ps5MenuSpeed`, `in_ps5Mouse`, `in_ps5MouseSpeed`, `in_ps5Keyboard`,
+`in_ps5Gyro` (gyro aim, `0` or `1`), `in_ps5GyroSpeed` (the view turns this many times as far as the pad, 0.1 to 5, 2 at first),
 `r_ps5Height` (2160, 1440 or 1080 when the menu has not chosen) and `r_ps5Refresh`.
 
 ## How it is put together
@@ -127,7 +159,7 @@ Quake3e's sources are compiled unchanged from the `vendor/Quake3e` submodule
 | `ps5_sys.c` | `unix/unix_main.c` | launch, the main loop, the log, the exit through the shell, name lookup, the libc calls the console lacks |
 | `ps5_shared.c` | `unix/unix_shared.c` | time, file listing, files and folders FTP can reach |
 | `ps5_glimp.c` | `sdl/sdl_glimp.c` | RADV's entry point, the `VK_KHR_display` surface, the display modes |
-| `ps5_input.c` | `sdl/sdl_input.c` | the DualSense as Quake's keys, mouse and joystick; a USB mouse and keyboard; the on-screen keyboard |
+| `ps5_input.c` | `sdl/sdl_input.c` | the DualSense as Quake's keys, mouse and joystick, its gyro and touch pad; a USB mouse and keyboard; the on-screen keyboard |
 | `ps5_snd.c` | `sdl/sdl_snd.c` | the mixer's buffer through the console's 48 kHz output |
 
 `ps5/src/platform.c` is the template's PS5 layer (log, pad, mouse, keyboard, sound, exit).
@@ -139,7 +171,7 @@ The menus are a second build: ioquake3's `q3_ui` from the `vendor/ioq3` submodul
 copy (`ps5/ui/q3_ui.patch` is the difference), compiled to a QVM and packed as `baseq3/zz-ps5-ui.pk3`. The changes: the graphics menu lists the
 console's display modes and has a Show FPS switch, Game Options has an Auto Switch Weapons
 switch (`cg_autoswitch`, on by default), the controls menu shows and binds
-the DualSense's buttons beside a mouse's and a keyboard's and has the two look sensitivities, text fields open the
+the DualSense's buttons beside a mouse's and a keyboard's and has the two look sensitivities and the gyro's switch and speed, text fields open the
 on-screen keyboard, there is no CD key prompt at start-up, and the credits describe
 this build.
 
@@ -151,7 +183,7 @@ The stack builds on Linux. On macOS this repository drives a Lima VM:
 git submodule update --init   # Quake3e and ioquake3, at their pinned revisions
 ps5/tools/vm.sh build      # the title: dist/PPSA99303/
 ps5/tools/vm.sh build-ui   # the menus: dist/PPSA99303/baseq3/zz-ps5-ui.pk3
-ps5/tools/vm.sh package-release 1.2.0   # dist/Quake3-PS5-v1.2.0.zip, from a clean commit
+ps5/tools/vm.sh package-release 1.3.0   # dist/Quake3-PS5-v1.3.0.zip, from a clean commit
 ps5/tools/vm.sh deploy     # FTP to the console (needs the stack's control payload)
 ps5/tools/vm.sh run        # launch and follow the console's log
 ```
