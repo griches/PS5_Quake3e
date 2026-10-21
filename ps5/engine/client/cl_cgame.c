@@ -141,6 +141,23 @@ static qboolean CL_GetSnapshot( int snapshotNumber, snapshot_t *snapshot ) {
 	snapshot->serverTime = clSnap->serverTime;
 	Com_Memcpy( snapshot->areamask, clSnap->areamask, sizeof( snapshot->areamask ) );
 	snapshot->ps = clSnap->ps;
+
+	// PS5: split screen, the camera. When it cuts to another player the cgame keeps
+	// the animation it had for the one it followed (it starts afresh only when the
+	// animation's number changes), so a model whose frames differ shows a T pose
+	// and no head. A moment after a cut the animations' toggle bit is flipped, and
+	// the cgame starts the new player's animations as its own.
+	if ( cl_localPlayer == CL_CameraPlayer() ) {
+		if ( snapshot->ps.clientNum != cl_lp->cameraFollowed ) {
+			cl_lp->cameraFollowed = snapshot->ps.clientNum;
+			cl_lp->cameraCutTime = cls.realtime;
+		}
+		if ( cls.realtime - cl_lp->cameraCutTime < 250 ) {
+			snapshot->ps.legsAnim ^= ANIM_TOGGLEBIT;
+			snapshot->ps.torsoAnim ^= ANIM_TOGGLEBIT;
+		}
+	}
+
 	count = clSnap->numEntities;
 	if ( count > MAX_ENTITIES_IN_SNAPSHOT ) {
 		Com_DPrintf( "CL_GetSnapshot: truncated %i entities to %i\n", count, MAX_ENTITIES_IN_SNAPSHOT );

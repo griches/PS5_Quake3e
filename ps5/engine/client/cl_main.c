@@ -362,6 +362,7 @@ static void CL_SplitJoin( int player ) {
 	cl_lp->loadPending = qfalse;
 	cl_lp->teamSent = qfalse;
 	cl_lp->cameraCut = 0;
+	cl_lp->cameraFollowed = -1;
 	cl_lp->userinfo[0] = '\0';
 
 	NET_StringToAdr( "localhost", &clc.serverAddress, NA_UNSPEC );

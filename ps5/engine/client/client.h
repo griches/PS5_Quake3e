@@ -383,6 +383,8 @@ typedef struct {
 	qboolean			teamSent;		// cl_splitTeam<n> went to the server
 	qboolean			dropped;		// the server let this player go: out until the next map
 	int					cameraCut;		// the camera's: cls.realtime of its next cut, 0 before the first
+	int					cameraFollowed;	// the camera's: the client its snapshots last followed
+	int					cameraCutTime;	// the camera's: cls.realtime its snapshots changed client
 	char				userinfo[MAX_INFO_STRING];	// as last sent (players 2 and on)
 } localPlayer_t;
 
