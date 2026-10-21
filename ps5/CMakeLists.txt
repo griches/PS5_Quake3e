@@ -2,9 +2,10 @@
 #
 # Configured with the payload SDK's toolchain (toolchain/prospero.cmake). It
 # compiles Quake3e's engine (client, server, botlib, the Vulkan renderer and its
-# bundled libjpeg) from the vendor/Quake3e submodule, unchanged, with the PS5
-# layer in ps5/q3/ in place of the engine's SDL and unix files, then
-# tools/link-title.sh links the objects with RADV and packages the title folder.
+# bundled libjpeg) from build/engine-src (the vendor/Quake3e submodule with
+# ps5/engine/ over it, tools/build.sh), with the PS5 layer in ps5/q3/ in place
+# of the engine's SDL and unix files, then tools/link-title.sh links the objects
+# with RADV and packages the title folder.
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -17,7 +18,7 @@ file(READ ${CMAKE_CURRENT_SOURCE_DIR}/sce_sys/param.json param_json)
 string(JSON PS5_TITLE_NAME GET "${param_json}" localizedParameters en-US titleName)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS sce_sys/param.json)
 set(PS5_VULKAN_DIR "${ROOT}/../PS5_Vulkan" CACHE PATH "the PS5_Vulkan checkout (RADV archive, link recipe, packaging)")
-set(QUAKE3E_DIR "${ROOT}/vendor/Quake3e" CACHE PATH "the Quake3e checkout (the vendor/Quake3e submodule)")
+set(QUAKE3E_DIR "${ROOT}/build/engine-src" CACHE PATH "the engine's sources (the vendor/Quake3e submodule with ps5/engine/ over it)")
 set(Q ${QUAKE3E_DIR}/code)
 if(NOT EXISTS ${Q}/qcommon/common.c)
 	message(FATAL_ERROR "no Quake3e sources at ${QUAKE3E_DIR}: run git submodule update --init")

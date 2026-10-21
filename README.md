@@ -8,7 +8,7 @@ A PS5 homebrew port of [Quake3e](https://github.com/ec-/Quake3e), an improved
 Quake III Arena engine, drawing with its Vulkan renderer on RADV through the
 [PS5 Vulkan Template](https://github.com/mihawk-99/PS5_VulkanTemplate) stack.
 It plays with the DualSense, with gyro aim if you want it, or with a USB mouse
-and keyboard.
+and keyboard, and two to four players can share the screen in split screen.
 
 It needs a PS5 that already runs homebrew, and your own copy of the game's data.
 No game data, Sony software or keys are included.
@@ -23,6 +23,7 @@ or read it in the console's log; nothing else is claimed.
 | Start-up and exit | Boots to the menu, loads all nine pak files, quits cleanly to the home screen | |
 | Rendering | Single player plays at 3840x2160 on a 59.94 Hz display | Whether it holds 60 fps everywhere; 120 Hz (the test display stayed at 60) |
 | Video modes | The menu lists 3840x2160, 2560x1440 and 1920x1080; a live switch to 1920x1080 went through | 2560x1440 |
+| Split screen | Two, three and four players, 2026-10-21: each joins and plays; four players and three bots started from the menu; a locked 120 fps at 3840x2160 on a 120 Hz display with one to four players and three bots (q3dm4, q3dm17), never a missed refresh | Players 3 and 4 on their own controllers; team games; how far past 120 it could go |
 | Input | DualSense: sticks, buttons, triggers; a button rebound in the controls menu, saved across launches. A USB mouse (movement, three buttons, the wheel) and a USB keyboard, 2026-10-11. The gyro, aiming in play and moving the menu pointer, and the touch pad's tap and double tap, 2026-10-21 | The two sensitivity sliders and invert look; the mouse speed slider; a mouse's side buttons; a Bluetooth mouse or keyboard |
 | Sound | 48 kHz stereo effects | Music (no Ogg Vorbis in this build) |
 | Network | Name lookup works; the Internet server list fills (over 1,000 servers); a server's own pak files downloaded | A full online or LAN match, start to finish |
@@ -36,6 +37,9 @@ Known limits:
 - A keyboard types the US layout's characters, whatever the keyboard's own.
 - Stepping sideways on the left stick is on or off, not analog.
 - The menus are ioquake3's; a pure server's own menus take over while connected.
+- Split screen is on the console's own server only (with or without bots), not
+  online. Each part of the screen shows the game's own heads-up display, drawn for
+  a 4:3 screen and stretched to fit.
 
 ## Install
 
@@ -148,11 +152,47 @@ The port's own cvars: `in_ps5LookSpeed`, `in_ps5MenuSpeed`, `in_ps5Mouse`, `in_p
 `in_ps5Gyro` (gyro aim, `0` or `1`), `in_ps5GyroSpeed` (the view turns this many times as far as the pad, 0.1 to 5, 2 at first),
 `r_ps5Height` (2160, 1440 or 1080 when the menu has not chosen) and `r_ps5Refresh`.
 
+## Split screen
+
+Two to four players play on one console: two have half the screen each, side by
+side; three or four have a quarter each.
+
+1. Turn on another controller for each player and press its PS button. The
+   console asks who is using it: pick a user or a guest. The players after the
+   first are those users, in the order they signed in, and take their names.
+2. In the main menu choose **SPLIT SCREEN**, then a game type and a map, as for a
+   skirmish.
+3. On the next page choose **Players** (2, 3 or 4, at the top of the right-hand
+   column): the first slots on the left are **Player 1** and the others on the
+   console. The other slots are as in a skirmish: Bot, Open, or "----" for none,
+   with the bots' skill at the top. In a team game, choose each player's team
+   there (they start on the same team).
+4. **Fight**.
+
+Both controllers play with player 1's controls (Setup, Controls), and each
+player's gyro aim is their own: double tap the touch pad to switch it. OPTIONS on
+either controller opens the menu, which pauses the game, and either controller
+can work it. The mouse, the keyboard and the on-screen keyboard are player 1's.
+
+The other players join as the map loads and leave when you leave the game; a
+player without a controller stands where they start. Each player
+hears the game from where they stand: a sound is heard from the nearer player.
+From the console, `player 2 <command>` runs a command as player 2 (for example
+`player 2 team red`).
+
+The split screen cvars: `cl_splitPlayers` (the players on the next local map,
+set by the menu), `cl_splitName2` (player 2's name, from their user),
+`cl_splitModel2` (player 2's model; empty picks one player 1 doesn't wear),
+`cl_splitTeam2` (player 2's team in a team game, set by the menu) and
+`in_ps5Gyro2` (player 2's gyro aim). Players 3 and 4 have their own (`cl_splitName3`
+and so on).
+
 ## How it is put together
 
-Quake3e's sources are compiled unchanged from the `vendor/Quake3e` submodule
-(pinned at `2b375bd`). The engine's SDL and unix files are left out and
-`ps5/q3/` stands in for them:
+Quake3e's sources come from the `vendor/Quake3e` submodule (pinned at `2b375bd`),
+copied to `build/engine-src/` with the files in `ps5/engine/` over the copy
+(`ps5/engine/quake3e.patch` is the difference: split screen). The engine's SDL and
+unix files are left out and `ps5/q3/` stands in for them:
 
 | File | Replaces | Does |
 | --- | --- | --- |
@@ -161,6 +201,18 @@ Quake3e's sources are compiled unchanged from the `vendor/Quake3e` submodule
 | `ps5_glimp.c` | `sdl/sdl_glimp.c` | RADV's entry point, the `VK_KHR_display` surface, the display modes |
 | `ps5_input.c` | `sdl/sdl_input.c` | the DualSense as Quake's keys, mouse and joystick, its gyro and touch pad; a USB mouse and keyboard; the on-screen keyboard |
 | `ps5_snd.c` | `sdl/sdl_snd.c` | the mixer's buffer through the console's 48 kHz output |
+
+Split screen in the engine (`ps5/engine/`): each local player has a client of
+their own (the client state, the connection, the cgame VM, the buttons), and the
+code works on the current player's, so the stock `cgame.qvm` runs once for each
+player, told that their half is the whole screen. The players after the first
+connect to the local server on loopback channels of their own and load the map
+after player 1, using the world player 1's cgame loaded. Input events carry the
+player they are from; another player's bound commands run as theirs (the
+`player` command). The mixer hears each sound from the nearest player and drops
+the copies the other cgames start. The local players count as one for pausing.
+`MAX_LOCAL_PLAYERS` (4) sizes all of it, and the screen's layout has quarters for
+three or four.
 
 `ps5/src/platform.c` is the template's PS5 layer (log, pad, mouse, keyboard, sound, exit).
 The SDK has no stub for the console's mouse library, so `ps5/stubs/` names its
@@ -173,7 +225,8 @@ console's display modes and has a Show FPS switch, Game Options has an Auto Swit
 switch (`cg_autoswitch`, on by default), the controls menu shows and binds
 the DualSense's buttons beside a mouse's and a keyboard's and has the two look sensitivities and the gyro's switch and speed, text fields open the
 on-screen keyboard, there is no CD key prompt at start-up, and the credits describe
-this build.
+this build, and **SPLIT SCREEN** in the main menu starts a skirmish with the first
+slots for the players on the console.
 
 ## Building
 

@@ -51,6 +51,13 @@ In a menu, the console or a chat line the pad is the keys those expect:
 
 While the controls menu waits for a button to bind (the cvar ui_ps5WaitingForKey,
 set by ps5/ui/ui_controls2.c) the buttons are their gamepad keys again.
+
+Split screen: each signed-in user's controller is a player's (platform.c's
+players, in sign-in order), and the players after the first send their events
+as theirs (Sys_QuePlayerEvent): the engine runs their bindings, which are player
+1's, for them, and gives their keys to the menus everyone shares. Each player
+has their own gyro aim switch (in_ps5Gyro, in_ps5Gyro2 and on). The mouse, the
+keyboard and the on-screen keyboard are player 1's.
 */
 
 static cvar_t *in_ps5LookSpeed;
@@ -63,7 +70,6 @@ static cvar_t *in_ps5GyroSpeed;
 
 static qboolean in_open;
 static double in_last;
-static float in_remainder_x, in_remainder_y;
 
 enum {
 	B_CROSS, B_CIRCLE, B_SQUARE, B_TRIANGLE, B_L1, B_R1, B_L2, B_R2, B_L3, B_R3,
@@ -72,9 +78,56 @@ enum {
 	B_KEY_CTRL, B_KEY_SHIFT, B_KEY_ALT, B_KEY_SUPER,
 	B_COUNT
 };
-// the key each control sent down, so the same key goes up whatever the menu state is by then
-static int in_down[B_COUNT];
-static int in_axis_forward;
+
+// the gyro's model of the pad (IN_GyroTurn)
+typedef struct {
+	uint64_t last_us;
+	float up[3];
+	qboolean up_valid;
+	float bias[3];
+	int rests;
+	// the half second being measured for a rest
+	double sum[3], sum_sq[3];
+	float accel_min, accel_max, window;
+	int samples;
+} gyro_t;
+
+// the touch pad's taps (IN_TouchTap)
+typedef struct {
+	qboolean down, clicked;
+	uint64_t down_us, up_us;
+	int taps;
+} touch_t;
+
+// PS5: split screen, each local player's pad, and the one being read (in_player's)
+typedef struct {
+	// the key each control sent down, so the same key goes up whatever the menu state is by then
+	int down[B_COUNT];
+	int axis_forward;
+	float remainder_x, remainder_y;
+	gyro_t gyro;
+	touch_t touch;
+	cvar_t *gyro_aim; // in_ps5Gyro, in_ps5Gyro2...
+	struct pad pad; // as the last poll read it
+} padPlayer_t;
+
+static padPlayer_t in_pads[MAX_LOCAL_PLAYERS];
+static padPlayer_t *in = &in_pads[0];
+static int in_player;
+
+#define in_down		in->down
+#define in_gyro		in->gyro
+#define in_touch	in->touch
+
+
+// an event of the pad being read: player 1's, or another player's as theirs
+static void IN_QueEvent( int now, sysEventType_t type, int value, int value2 )
+{
+	if ( in_player )
+		Sys_QuePlayerEvent( in_player, now, type, value, value2 );
+	else
+		Sys_QueEvent( now, type, value, value2, 0, NULL );
+}
 
 
 /*
@@ -191,11 +244,11 @@ static void IN_Key( int control, qboolean down, int key )
 		if ( in_down[control] )
 			return;
 		in_down[control] = key;
-		Sys_QueEvent( now, SE_KEY, key, qtrue, 0, NULL );
-		if ( key == K_ENTER )
+		IN_QueEvent( now, SE_KEY, key, qtrue );
+		if ( key == K_ENTER && !in_player )
 			Sys_QueEvent( now, SE_CHAR, '\r', 0, 0, NULL );
 	} else if ( in_down[control] ) {
-		Sys_QueEvent( now, SE_KEY, in_down[control], qfalse, 0, NULL );
+		IN_QueEvent( now, SE_KEY, in_down[control], qfalse );
 		in_down[control] = 0;
 	}
 }
@@ -203,16 +256,36 @@ static void IN_Key( int control, qboolean down, int key )
 
 static void IN_KeyboardRelease( void );
 
-static void IN_ReleaseAll( void )
+// the pad being read lets go of everything (player 1's: the keyboard too)
+static void IN_ReleasePad( void )
 {
 	int i;
 
 	for ( i = 0; i < B_COUNT; i++ )
 		IN_Key( i, qfalse, 0 );
-	IN_KeyboardRelease();
-	if ( in_axis_forward ) {
-		in_axis_forward = 0;
-		Sys_QueEvent( Sys_Milliseconds(), SE_JOYSTICK_AXIS, AXIS_FORWARD, 0, 0, NULL );
+	if ( !in_player )
+		IN_KeyboardRelease();
+	if ( in->axis_forward ) {
+		in->axis_forward = 0;
+		IN_QueEvent( Sys_Milliseconds(), SE_JOYSTICK_AXIS, AXIS_FORWARD, 0 );
+	}
+}
+
+
+static void IN_SetPlayer( int player )
+{
+	in_player = player;
+	in = &in_pads[player];
+}
+
+
+static void IN_ReleaseAll( void )
+{
+	int player;
+
+	for ( player = MAX_LOCAL_PLAYERS - 1; player >= 0; player-- ) {
+		IN_SetPlayer( player );
+		IN_ReleasePad();
 	}
 }
 
@@ -425,18 +498,6 @@ scaled toward nothing, so a pad at rest never drifts.
 #define TAP_US				250000
 #define TAP_GAP_US			300000
 
-static struct {
-	uint64_t last_us;
-	float up[3];
-	qboolean up_valid;
-	float bias[3];
-	int rests;
-	// the half second being measured for a rest
-	double sum[3], sum_sq[3];
-	float accel_min, accel_max, window;
-	int samples;
-} in_gyro;
-
 static void IN_GyroRestWindow( const float gyro[3], float accel_length, float dt )
 {
 	qboolean rest;
@@ -478,12 +539,6 @@ static void IN_GyroRestWindow( const float gyro[3], float accel_length, float dt
 }
 
 
-static struct {
-	qboolean down, clicked;
-	uint64_t down_us, up_us;
-	int taps;
-} in_touch;
-
 // One reading's touch: 1 when it ends a tap, 2 when that tap is the second of a double tap
 static int IN_TouchTap( const struct pad_reading *r )
 {
@@ -520,7 +575,7 @@ static int IN_TouchTap( const struct pad_reading *r )
 static void IN_GyroTurn( float *yaw, float *pitch, int *taps )
 {
 	const struct pad_reading *readings;
-	const int count = pad_readings( &readings );
+	const int count = pad_player_readings( in_player, &readings );
 	float rate[3], turn[3], length, dt, world_yaw, horizontal, y, p, speed;
 	int i, k, tap;
 
@@ -584,10 +639,23 @@ static void IN_GyroTurn( float *yaw, float *pitch, int *taps )
 }
 
 
+// gyro aim on or off: the pad being read's, or as a command the current player's
+// (another player's binding runs as theirs: player <n> ps5_gyro)
+static void IN_ToggleGyro( int player )
+{
+	cvar_t *aim = in_pads[player].gyro_aim;
+
+	Cvar_Set( aim->name, aim->integer ? "0" : "1" );
+	if ( player )
+		Com_Printf( "Player %i: gyro aim %s\n", player + 1, aim->integer ? "on" : "off" );
+	else
+		Com_Printf( "Gyro aim %s\n", aim->integer ? "on" : "off" );
+}
+
+
 static void IN_ToggleGyro_f( void )
 {
-	Cvar_Set( "in_ps5Gyro", in_ps5Gyro->integer ? "0" : "1" );
-	Com_Printf( "Gyro aim %s\n", in_ps5Gyro->integer ? "on" : "off" );
+	IN_ToggleGyro( cl_localPlayer );
 }
 
 
@@ -608,60 +676,43 @@ static void IN_CenterPointer( void )
 }
 
 
-void HandleEvents( void )
+/*
+One player's pad, the pad being read (in_player's), in play or in a menu. A
+player after the first without a part of the screen (no split screen) has no
+input; a menu, the console and a chat line are everyone's.
+*/
+static void IN_Pad( double dt, qboolean menu, qboolean binding, float gyro_yaw, float gyro_pitch, int taps )
 {
-	struct pad pad;
-	const double now = now_seconds();
-	double dt = now - in_last;
-	qboolean menu, binding;
-	float lx, ly, rx, ry, speed, gyro_yaw, gyro_pitch, sensitivity;
-	int forward, dx, dy, taps;
+	const struct pad *pad = &in->pad;
+	float lx, ly, rx, ry, speed, sensitivity;
+	int forward, dx, dy;
 
-	in_last = now;
-	if ( !in_open )
-		return;
-	if ( dt < 0.0 || dt > 0.1 )
-		dt = 0.1;
-
-	pad_poll( &pad );
-	IN_GyroTurn( &gyro_yaw, &gyro_pitch, &taps );
-	if ( IN_PollKeyboard() ) {
-		IN_ReleaseAll();
+	if ( ( pad->held & PAD_INTERCEPTED ) || ( in_player && in_player >= CL_SplitViews() ) ) {
+		// the shell has the pad (the home screen, a system dialog), or the player isn't playing
+		IN_ReleasePad();
 		return;
 	}
-	if ( pad.held & PAD_INTERCEPTED ) {
-		// the shell has the pad (the home screen, a system dialog)
-		IN_ReleaseAll();
-		return;
-	}
-	menu = ( Key_GetCatcher() & ( KEYCATCH_UI | KEYCATCH_CONSOLE | KEYCATCH_MESSAGE ) ) != 0;
-	// the controls menu is waiting for a button to bind: give it the pad's own keys
-	binding = menu && Cvar_VariableIntegerValue( "ui_ps5WaitingForKey" ) != 0;
-	if ( !menu && Cvar_VariableIntegerValue( "ui_ps5WaitingForKey" ) != 0 )
-		Cvar_Set( "ui_ps5WaitingForKey", "0" ); // the menu went away mid-binding
 	if ( binding )
 		taps = 0;
 	if ( taps == 2 )
-		IN_ToggleGyro_f();
+		IN_ToggleGyro( in_player );
 
-	IN_Mouse();
-	IN_Keyboard();
-	if ( pad.pressed & PAD_CROSS )
+	if ( !in_player && ( pad->pressed & PAD_CROSS ) )
 		in_cross_time = Sys_Milliseconds();
-	IN_Key( B_OPTIONS, ( pad.held & PAD_OPTIONS ) != 0, K_ESCAPE );
+	IN_Key( B_OPTIONS, ( pad->held & PAD_OPTIONS ) != 0, K_ESCAPE );
 	if ( menu && !binding ) {
-		if ( pad.pressed & PAD_TRIANGLE ) {
+		if ( !in_player && ( pad->pressed & PAD_TRIANGLE ) ) {
 			IN_OpenKeyboard();
 			return;
 		}
-		IN_Key( B_CROSS, ( pad.held & PAD_CROSS ) != 0, K_ENTER );
-		IN_Key( B_CIRCLE, ( pad.held & PAD_CIRCLE ) != 0, K_ESCAPE );
-		IN_Key( B_SQUARE, ( pad.held & PAD_SQUARE ) != 0, K_BACKSPACE );
-		IN_Key( B_R2, pad.r2 > 0.5f, K_MOUSE1 );
-		IN_Key( B_UP, ( pad.held & PAD_UP ) != 0, K_UPARROW );
-		IN_Key( B_DOWN, ( pad.held & PAD_DOWN ) != 0, K_DOWNARROW );
-		IN_Key( B_LEFT, ( pad.held & PAD_LEFT ) != 0, K_LEFTARROW );
-		IN_Key( B_RIGHT, ( pad.held & PAD_RIGHT ) != 0, K_RIGHTARROW );
+		IN_Key( B_CROSS, ( pad->held & PAD_CROSS ) != 0, K_ENTER );
+		IN_Key( B_CIRCLE, ( pad->held & PAD_CIRCLE ) != 0, K_ESCAPE );
+		IN_Key( B_SQUARE, ( pad->held & PAD_SQUARE ) != 0, K_BACKSPACE );
+		IN_Key( B_R2, pad->r2 > 0.5f, K_MOUSE1 );
+		IN_Key( B_UP, ( pad->held & PAD_UP ) != 0, K_UPARROW );
+		IN_Key( B_DOWN, ( pad->held & PAD_DOWN ) != 0, K_DOWNARROW );
+		IN_Key( B_LEFT, ( pad->held & PAD_LEFT ) != 0, K_LEFTARROW );
+		IN_Key( B_RIGHT, ( pad->held & PAD_RIGHT ) != 0, K_RIGHTARROW );
 		// what play holds down is let go in a menu
 		IN_Key( B_TRIANGLE, qfalse, 0 );
 		IN_Key( B_L1, qfalse, 0 );
@@ -672,38 +723,39 @@ void HandleEvents( void )
 		IN_Key( B_TOUCH, qfalse, 0 );
 	} else {
 		// CIRCLE backs out of connecting, downloading or loading (ESCAPE there
-		// disconnects); it is its own key once the game is running, and for a binding
-		IN_Key( B_CIRCLE, ( pad.held & PAD_CIRCLE ) != 0, !binding && cls.state != CA_ACTIVE ? K_ESCAPE : K_PAD0_B );
-		IN_Key( B_CROSS, ( pad.held & PAD_CROSS ) != 0, K_PAD0_A );
-		IN_Key( B_SQUARE, ( pad.held & PAD_SQUARE ) != 0, K_PAD0_X );
-		IN_Key( B_TRIANGLE, ( pad.held & PAD_TRIANGLE ) != 0, K_PAD0_Y );
-		IN_Key( B_L1, ( pad.held & PAD_L1 ) != 0, K_PAD0_LEFTSHOULDER );
-		IN_Key( B_R1, ( pad.held & PAD_R1 ) != 0, K_PAD0_RIGHTSHOULDER );
-		IN_Key( B_L2, pad.l2 > 0.5f, K_PAD0_LEFTTRIGGER );
-		IN_Key( B_R2, pad.r2 > 0.5f, K_PAD0_RIGHTTRIGGER );
-		IN_Key( B_L3, ( pad.held & PAD_L3 ) != 0, K_PAD0_LEFTSTICK_CLICK );
-		IN_Key( B_R3, ( pad.held & PAD_R3 ) != 0, K_PAD0_RIGHTSTICK_CLICK );
-		IN_Key( B_TOUCH, ( pad.held & PAD_TOUCH_PAD ) != 0, K_PAD0_BACK );
-		IN_Key( B_UP, ( pad.held & PAD_UP ) != 0, K_PAD0_DPAD_UP );
-		IN_Key( B_DOWN, ( pad.held & PAD_DOWN ) != 0, K_PAD0_DPAD_DOWN );
-		IN_Key( B_LEFT, ( pad.held & PAD_LEFT ) != 0, K_PAD0_DPAD_LEFT );
-		IN_Key( B_RIGHT, ( pad.held & PAD_RIGHT ) != 0, K_PAD0_DPAD_RIGHT );
+		// disconnects); it is its own key once the game is running, and for a binding,
+		// and always another player's (player 1's loading is not theirs to stop)
+		IN_Key( B_CIRCLE, ( pad->held & PAD_CIRCLE ) != 0, !binding && !in_player && cls.state != CA_ACTIVE ? K_ESCAPE : K_PAD0_B );
+		IN_Key( B_CROSS, ( pad->held & PAD_CROSS ) != 0, K_PAD0_A );
+		IN_Key( B_SQUARE, ( pad->held & PAD_SQUARE ) != 0, K_PAD0_X );
+		IN_Key( B_TRIANGLE, ( pad->held & PAD_TRIANGLE ) != 0, K_PAD0_Y );
+		IN_Key( B_L1, ( pad->held & PAD_L1 ) != 0, K_PAD0_LEFTSHOULDER );
+		IN_Key( B_R1, ( pad->held & PAD_R1 ) != 0, K_PAD0_RIGHTSHOULDER );
+		IN_Key( B_L2, pad->l2 > 0.5f, K_PAD0_LEFTTRIGGER );
+		IN_Key( B_R2, pad->r2 > 0.5f, K_PAD0_RIGHTTRIGGER );
+		IN_Key( B_L3, ( pad->held & PAD_L3 ) != 0, K_PAD0_LEFTSTICK_CLICK );
+		IN_Key( B_R3, ( pad->held & PAD_R3 ) != 0, K_PAD0_RIGHTSTICK_CLICK );
+		IN_Key( B_TOUCH, ( pad->held & PAD_TOUCH_PAD ) != 0, K_PAD0_BACK );
+		IN_Key( B_UP, ( pad->held & PAD_UP ) != 0, K_PAD0_DPAD_UP );
+		IN_Key( B_DOWN, ( pad->held & PAD_DOWN ) != 0, K_PAD0_DPAD_DOWN );
+		IN_Key( B_LEFT, ( pad->held & PAD_LEFT ) != 0, K_PAD0_DPAD_LEFT );
+		IN_Key( B_RIGHT, ( pad->held & PAD_RIGHT ) != 0, K_PAD0_DPAD_RIGHT );
 	}
 
 	// the left stick: walking, analog forward and back, strafing as keys
-	lx = pad.left_x;
-	ly = pad.left_y;
+	lx = pad->left_x;
+	ly = pad->left_y;
 	IN_Key( B_STRAFE_LEFT, ( !menu || binding ) && lx < -0.4f, K_PAD0_LEFTSTICK_LEFT );
 	IN_Key( B_STRAFE_RIGHT, ( !menu || binding ) && lx > 0.4f, K_PAD0_LEFTSTICK_RIGHT );
 	forward = menu ? 0 : (int)( -ly * 127.0f );
-	if ( forward != in_axis_forward ) {
-		in_axis_forward = forward;
-		Sys_QueEvent( Sys_Milliseconds(), SE_JOYSTICK_AXIS, AXIS_FORWARD, forward, 0, NULL );
+	if ( forward != in->axis_forward ) {
+		in->axis_forward = forward;
+		IN_QueEvent( Sys_Milliseconds(), SE_JOYSTICK_AXIS, AXIS_FORWARD, forward );
 	}
 
 	// the right stick (and the left, in a menu) as mouse movement, faster the further it is pushed
-	rx = pad.right_x;
-	ry = pad.right_y;
+	rx = pad->right_x;
+	ry = pad->right_y;
 	if ( menu ) {
 		rx += lx;
 		ry += ly;
@@ -713,39 +765,118 @@ void HandleEvents( void )
 	}
 	rx = Com_Clamp( -1.0f, 1.0f, rx );
 	ry = Com_Clamp( -1.0f, 1.0f, ry );
-	in_remainder_x += rx * fabsf( rx ) * speed * (float)dt;
-	in_remainder_y += ry * fabsf( ry ) * speed * (float)dt;
+	in->remainder_x += rx * fabsf( rx ) * speed * (float)dt;
+	in->remainder_y += ry * fabsf( ry ) * speed * (float)dt;
 	// the gyro, in the mouse counts that turn the view by its turn times in_ps5GyroSpeed
 	// (CL_MouseMove: yaw -= m_yaw * sensitivity * dx, pitch += m_pitch * sensitivity * dy)
 	if ( taps && ( Key_GetCatcher() & KEYCATCH_UI ) ) {
 		// the reset: the pointer to the middle, and this poll's movement dropped
-		in_remainder_x = in_remainder_y = 0.0f;
+		in->remainder_x = in->remainder_y = 0.0f;
 		IN_CenterPointer();
 		return;
 	}
 	if ( taps && !menu ) {
 		// the reset: the view levels, and the gyro turns it from there
-		Cbuf_AddText( "centerview\n" );
+		Cbuf_AddText( in_player ? va( "player %i centerview\n", in_player + 1 ) : "centerview\n" );
 		gyro_yaw = gyro_pitch = 0.0f;
 	}
 	sensitivity = Cvar_VariableValue( "sensitivity" );
 	if ( Key_GetCatcher() & KEYCATCH_UI ) {
 		// a menu's pointer, gyro aim on or off
-		in_remainder_x -= gyro_yaw * GYRO_MENU_STEPS;
-		in_remainder_y -= gyro_pitch * GYRO_MENU_STEPS;
-	} else if ( !menu && in_ps5Gyro->integer && sensitivity > 0.0f ) {
+		in->remainder_x -= gyro_yaw * GYRO_MENU_STEPS;
+		in->remainder_y -= gyro_pitch * GYRO_MENU_STEPS;
+	} else if ( !menu && in->gyro_aim->integer && sensitivity > 0.0f ) {
 		const float m_yaw = Cvar_VariableValue( "m_yaw" ), m_pitch = Cvar_VariableValue( "m_pitch" );
 		if ( m_yaw != 0.0f )
-			in_remainder_x -= gyro_yaw * in_ps5GyroSpeed->value / ( m_yaw * sensitivity );
+			in->remainder_x -= gyro_yaw * in_ps5GyroSpeed->value / ( m_yaw * sensitivity );
 		if ( m_pitch != 0.0f )
-			in_remainder_y -= gyro_pitch * in_ps5GyroSpeed->value / ( m_pitch * sensitivity );
+			in->remainder_y -= gyro_pitch * in_ps5GyroSpeed->value / ( m_pitch * sensitivity );
 	}
-	dx = (int)in_remainder_x;
-	dy = (int)in_remainder_y;
-	in_remainder_x -= (float)dx;
-	in_remainder_y -= (float)dy;
+	dx = (int)in->remainder_x;
+	dy = (int)in->remainder_y;
+	in->remainder_x -= (float)dx;
+	in->remainder_y -= (float)dy;
 	if ( dx || dy )
-		Sys_QueEvent( Sys_Milliseconds(), SE_MOUSE, dx, dy, 0, NULL );
+		IN_QueEvent( Sys_Milliseconds(), SE_MOUSE, dx, dy );
+}
+
+
+/*
+Split screen: each player after the first is called by their user's name on the
+console (cl_splitName2 and on), as their controller's user changes.
+*/
+int sceUserServiceGetUserName( int32_t user, char *name, size_t size );
+
+static void IN_PlayerNames( void )
+{
+	static int32_t named[MAX_LOCAL_PLAYERS];
+	char name[32];
+	int player, i;
+
+	for ( player = 1; player < MAX_LOCAL_PLAYERS; player++ ) {
+		const int32_t user = pad_player_user( player );
+		if ( user < 0 || user == named[player] )
+			continue;
+		named[player] = user;
+		memset( name, 0, sizeof( name ) );
+		if ( sceUserServiceGetUserName( user, name, sizeof( name ) - 1 ) < 0 )
+			continue;
+		for ( i = 0; name[i]; i++ ) {
+			if ( name[i] < ' ' || name[i] > '~' || name[i] == '"' || name[i] == '\\' || name[i] == ';' )
+				name[i] = '_';
+		}
+		name[MAX_NAME_LENGTH - 1] = '\0';
+		Cvar_Set( va( "cl_splitName%i", player + 1 ), name );
+		Com_Printf( "PS5 pad: player %i is %s\n", player + 1, name );
+	}
+}
+
+
+void HandleEvents( void )
+{
+	const double now = now_seconds();
+	double dt = now - in_last;
+	qboolean menu, binding;
+	float gyro_yaw[MAX_LOCAL_PLAYERS], gyro_pitch[MAX_LOCAL_PLAYERS];
+	int taps[MAX_LOCAL_PLAYERS], player;
+
+	in_last = now;
+	if ( !in_open )
+		return;
+	if ( dt < 0.0 || dt > 0.1 )
+		dt = 0.1;
+
+	pad_poll( &in_pads[0].pad );
+	for ( player = 0; player < MAX_LOCAL_PLAYERS; player++ ) {
+		IN_SetPlayer( player );
+		if ( player )
+			pad_player( player, &in->pad );
+		IN_GyroTurn( &gyro_yaw[player], &gyro_pitch[player], &taps[player] );
+	}
+	IN_SetPlayer( 0 );
+	IN_PlayerNames();
+	if ( IN_PollKeyboard() ) {
+		IN_ReleaseAll();
+		return;
+	}
+	if ( in->pad.held & PAD_INTERCEPTED ) {
+		// the shell has the pad (the home screen, a system dialog)
+		IN_ReleaseAll();
+		return;
+	}
+	menu = ( Key_GetCatcher() & ( KEYCATCH_UI | KEYCATCH_CONSOLE | KEYCATCH_MESSAGE ) ) != 0;
+	// the controls menu is waiting for a button to bind: give it the pad's own keys
+	binding = menu && Cvar_VariableIntegerValue( "ui_ps5WaitingForKey" ) != 0;
+	if ( !menu && Cvar_VariableIntegerValue( "ui_ps5WaitingForKey" ) != 0 )
+		Cvar_Set( "ui_ps5WaitingForKey", "0" ); // the menu went away mid-binding
+
+	IN_Mouse();
+	IN_Keyboard();
+	for ( player = 0; player < MAX_LOCAL_PLAYERS; player++ ) {
+		IN_SetPlayer( player );
+		IN_Pad( dt, menu, binding, gyro_yaw[player], gyro_pitch[player], taps[player] );
+	}
+	IN_SetPlayer( 0 );
 }
 
 
@@ -821,6 +952,8 @@ void IN_Frame( void )
 
 void IN_Init( void )
 {
+	int i;
+
 	in_ps5LookSpeed = Cvar_Get( "in_ps5LookSpeed", "2400", CVAR_ARCHIVE );
 	Cvar_SetDescription( in_ps5LookSpeed, "PS5: the right stick at full tilt, in mouse counts a second." );
 	in_ps5MenuSpeed = Cvar_Get( "in_ps5MenuSpeed", "500", CVAR_ARCHIVE );
@@ -837,6 +970,12 @@ void IN_Init( void )
 	in_ps5Gyro = Cvar_Get( "in_ps5Gyro", "0", CVAR_ARCHIVE );
 	Cvar_CheckRange( in_ps5Gyro, "0", "1", CV_INTEGER );
 	Cvar_SetDescription( in_ps5Gyro, "PS5: the DualSense's gyro aims too (ps5_gyro switches it)." );
+	in_pads[0].gyro_aim = in_ps5Gyro;
+	for ( i = 1; i < MAX_LOCAL_PLAYERS; i++ ) {
+		in_pads[i].gyro_aim = Cvar_Get( va( "in_ps5Gyro%i", i + 1 ), "0", CVAR_ARCHIVE );
+		Cvar_CheckRange( in_pads[i].gyro_aim, "0", "1", CV_INTEGER );
+		Cvar_SetDescription( in_pads[i].gyro_aim, va( "PS5: player %i's gyro aims too, in split screen (their ps5_gyro switches it).", i + 1 ) );
+	}
 	in_ps5GyroSpeed = Cvar_Get( "in_ps5GyroSpeed", "2", CVAR_ARCHIVE );
 	Cvar_CheckRange( in_ps5GyroSpeed, "0.1", "5", CV_FLOAT );
 	Cvar_SetDescription( in_ps5GyroSpeed, "PS5: the view turns this many times as far as the DualSense." );

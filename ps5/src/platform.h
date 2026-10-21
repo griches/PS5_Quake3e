@@ -67,6 +67,8 @@ uint32_t pad_players(void);
 /* A player's pad as the last pad_poll read it, `pressed` against the held
  * buttons *pad had; false, and a pad at rest, when that player has none. */
 bool pad_player(int player, struct pad *pad);
+/* The signed-in user whose controller is a player's; -1 when that player has none. */
+int32_t pad_player_user(int player);
 
 /* Set in a reading's buttons while the shell has the pad (the home screen, a
  * system dialog): that reading is not input for the title. */

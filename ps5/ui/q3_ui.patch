@@ -724,9 +724,50 @@
  
 --- a/code/q3_ui/ui_menu.c
 +++ b/code/q3_ui/ui_menu.c
-@@ -273,7 +273,9 @@
+@@ -40,6 +40,7 @@
+ #define ID_TEAMARENA		15
+ #define ID_MODS					16
+ #define ID_EXIT					17
++#define ID_SPLITSCREEN			18	// PS5
+ 
+ #define MAIN_BANNER_MODEL				"models/mapobjects/banner/banner5.md3"
+ #define MAIN_MENU_VERTICAL_SPACING		34
+@@ -50,6 +51,7 @@
+ 
+ 	menutext_s		singleplayer;
+ 	menutext_s		multiplayer;
++	menutext_s		splitscreen;	// PS5
+ 	menutext_s		setup;
+ 	menutext_s		demos;
+ 	menutext_s		cinematics;
+@@ -70,6 +72,10 @@
+ 
+ static errorMessage_t s_errorMessage;
+ 
++// PS5: split screen, a skirmish for players on this console (ps5/ui/ui_startserver.c)
++void UI_SplitScreenMenu( void );
++
++
+ /*
+ =================
+ MainMenu_ExitAction
+@@ -102,6 +108,10 @@
+ 
+ 	case ID_MULTIPLAYER:
+ 		UI_ArenaServersMenu();
++		break;
++
++	case ID_SPLITSCREEN:
++		UI_SplitScreenMenu();
+ 		break;
+ 
+ 	case ID_SETUP:
+@@ -272,8 +282,12 @@
+ 	int		style = UI_CENTER | UI_DROPSHADOW;
  
  	trap_Cvar_Set( "sv_killserver", "1" );
++	// PS5: split screen is for the skirmish that asks for it (UI_SplitScreenMenu)
++	trap_Cvar_Set( "cl_splitPlayers", "1" );
  
 -	if( !uis.demoversion && !ui_cdkeychecked.integer ) {
 +	// PS5: no CD key prompt at start-up (it only opened the on-screen keyboard, and
@@ -735,6 +776,32 @@
  		char	key[17];
  
  		trap_GetCDKey( key, sizeof(key) );
+@@ -333,6 +347,17 @@
+ 	s_main.multiplayer.style				= style;
+ 
+ 	y += MAIN_MENU_VERTICAL_SPACING;
++	s_main.splitscreen.generic.type			= MTYPE_PTEXT;
++	s_main.splitscreen.generic.flags		= QMF_CENTER_JUSTIFY|QMF_PULSEIFFOCUS;
++	s_main.splitscreen.generic.x			= 320;
++	s_main.splitscreen.generic.y			= y;
++	s_main.splitscreen.generic.id			= ID_SPLITSCREEN;
++	s_main.splitscreen.generic.callback		= Main_MenuEvent;
++	s_main.splitscreen.string				= "SPLIT SCREEN";
++	s_main.splitscreen.color				= color_red;
++	s_main.splitscreen.style				= style;
++
++	y += MAIN_MENU_VERTICAL_SPACING;
+ 	s_main.setup.generic.type				= MTYPE_PTEXT;
+ 	s_main.setup.generic.flags				= QMF_CENTER_JUSTIFY|QMF_PULSEIFFOCUS;
+ 	s_main.setup.generic.x					= 320;
+@@ -405,6 +430,7 @@
+ 
+ 	Menu_AddItem( &s_main.menu,	&s_main.singleplayer );
+ 	Menu_AddItem( &s_main.menu,	&s_main.multiplayer );
++	Menu_AddItem( &s_main.menu,	&s_main.splitscreen );
+ 	Menu_AddItem( &s_main.menu,	&s_main.setup );
+ 	Menu_AddItem( &s_main.menu,	&s_main.demos );
+ 	Menu_AddItem( &s_main.menu,	&s_main.cinematics );
 --- a/code/q3_ui/ui_mfield.c
 +++ b/code/q3_ui/ui_mfield.c
 @@ -379,6 +379,10 @@
@@ -798,10 +865,11 @@
  	case ID_BACK:
  		UI_PopMenu();
  		break;
-@@ -353,6 +360,16 @@
+@@ -352,6 +359,16 @@
+ 	s_preferences.allowdownload.generic.id       = ID_ALLOWDOWNLOAD;
  	s_preferences.allowdownload.generic.x	       = PREFERENCES_X_POS;
  	s_preferences.allowdownload.generic.y	       = y;
- 
++
 +	// PS5: also under Setup, Controls, Weapons; here so it is found with the game's options
 +	y += BIGCHAR_HEIGHT+2;
 +	s_preferences.autoswitch.generic.type     = MTYPE_RADIOBUTTON;
@@ -811,10 +879,9 @@
 +	s_preferences.autoswitch.generic.id       = ID_AUTOSWITCH;
 +	s_preferences.autoswitch.generic.x	      = PREFERENCES_X_POS;
 +	s_preferences.autoswitch.generic.y	      = y;
-+
+ 
  	s_preferences.back.generic.type	    = MTYPE_BITMAP;
  	s_preferences.back.generic.name     = ART_BACK0;
- 	s_preferences.back.generic.flags    = QMF_LEFT_JUSTIFY|QMF_PULSEIFFOCUS;
 @@ -379,6 +396,7 @@
  	Menu_AddItem( &s_preferences.menu, &s_preferences.forcemodel );
  	Menu_AddItem( &s_preferences.menu, &s_preferences.drawteamoverlay );
@@ -823,6 +890,281 @@
  
  	Menu_AddItem( &s_preferences.menu, &s_preferences.back );
  
+--- a/code/q3_ui/ui_startserver.c
++++ b/code/q3_ui/ui_startserver.c
+@@ -79,6 +79,7 @@
+ 	menubitmap_s	item_null;
+ 
+ 	qboolean		multiplayer;
++	int				splitPlayers;	// PS5: split screen, the players on the console (0: not split screen)
+ 	int				currentmap;
+ 	int				nummaps;
+ 	int				page;
+@@ -103,6 +104,8 @@
+ extern const char* punkbuster_items[];
+ 
+ static void UI_ServerOptionsMenu( qboolean multiplayer );
++static void ServerOptions_InitLocalPlayers( void );
++static void ServerOptions_InitBotNames( void );
+ 
+ 
+ /*
+@@ -600,6 +603,26 @@
+ void UI_StartServerMenu( qboolean multiplayer ) {
+ 	StartServer_MenuInit();
+ 	s_startserver.multiplayer = multiplayer;
++	UI_PushMenu( &s_startserver.menu );
++}
++
++
++/*
++=================
++UI_SplitScreenMenu
++
++PS5: split screen, a skirmish for players on this console, each with a part of
++the screen and a controller: the first slots are theirs. Two to begin with; the
++next page chooses two to four (the engine's most, cl_splitPlayers).
++=================
++*/
++#define SPLIT_PLAYERS		2
++#define SPLIT_PLAYERS_MAX	4
++
++void UI_SplitScreenMenu( void ) {
++	StartServer_MenuInit();
++	s_startserver.splitPlayers = SPLIT_PLAYERS;
++	s_startserver.banner.string = "SPLIT SCREEN";
+ 	UI_PushMenu( &s_startserver.menu );
+ }
+ 
+@@ -618,6 +641,7 @@
+ #define ID_DEDICATED			22
+ #define ID_GO					23
+ #define ID_BACK					24
++#define ID_SPLITPLAYERS			25	// PS5
+ 
+ #define PLAYER_SLOTS			12
+ 
+@@ -640,6 +664,9 @@
+ 	menulist_s			botSkill;
+ 
+ 	menutext_s			player0;
++	menulist_s			splitPlayersList;	// PS5: split screen, the players on the console
++	menutext_s			localPlayer[SPLIT_PLAYERS_MAX];	// PS5: split screen, "Player 2" and on
++	char				localPlayerLabels[SPLIT_PLAYERS_MAX][16];
+ 	menulist_s			playerType[PLAYER_SLOTS];
+ 	menutext_s			playerName[PLAYER_SLOTS];
+ 	menulist_s			playerTeam[PLAYER_SLOTS];
+@@ -649,6 +676,7 @@
+ 	menubitmap_s		back;
+ 
+ 	qboolean			multiplayer;
++	int					splitPlayers;	// PS5: the slots of the players on the console (0: not split screen)
+ 	int					gametype;
+ 	char				mapnamebuffer[32];
+ 	char				playerNameBuffers[PLAYER_SLOTS][16];
+@@ -679,6 +707,14 @@
+ static const char *playerTeam_list[] = {
+ 	"Blue",
+ 	"Red",
++	NULL
++};
++
++// PS5: split screen, the players on the console (splitPlayersList)
++static const char *splitPlayers_list[] = {
++	"2",
++	"3",
++	"4",
+ 	NULL
+ };
+ 
+@@ -780,6 +816,14 @@
+ 	}
+ 
+ 	trap_Cvar_SetValue( "sv_maxclients", Com_Clamp( 0, 12, maxclients ) );
++
++	// PS5: split screen, the players on the console after the first join beside them,
++	// each on the team their slot has
++	trap_Cvar_SetValue( "cl_splitPlayers", s_serveroptions.splitPlayers > 1 ? s_serveroptions.splitPlayers : 1 );
++	for( n = 1; n < s_serveroptions.splitPlayers; n++ ) {
++		trap_Cvar_Set( va( "cl_splitTeam%i", n + 1 ), s_serveroptions.gametype >= GT_TEAM ?
++			playerTeam_list[s_serveroptions.playerTeam[n].curvalue] : "" );
++	}
+ 	trap_Cvar_SetValue( "dedicated", Com_Clamp( 0, 2, dedicated ) );
+ 	trap_Cvar_SetValue ("timelimit", Com_Clamp( 0, timelimit, timelimit ) );
+ 	trap_Cvar_SetValue ("fraglimit", Com_Clamp( 0, fraglimit, fraglimit ) );
+@@ -898,10 +942,15 @@
+ 
+ 	// names
+ 	if( s_serveroptions.dedicated.curvalue == 0 ) {
+-		s_serveroptions.player0.string = "Human";
++		s_serveroptions.player0.string = s_serveroptions.splitPlayers > 1 ? "Player 1" : "Human";
+ 		s_serveroptions.playerName[0].generic.flags &= ~QMF_HIDDEN;
+ 
+ 		start = 1;
++		// PS5: split screen, the other players on the console
++		for( n = 1; n < s_serveroptions.splitPlayers; n++ ) {
++			s_serveroptions.playerName[n].generic.flags &= ~QMF_HIDDEN;
++			start = n + 1;
++		}
+ 	}
+ 	else {
+ 		s_serveroptions.player0.string = "Open";
+@@ -953,6 +1002,19 @@
+ 	case ID_DEDICATED:
+ 		ServerOptions_SetPlayerItems();
+ 		break;
++
++	case ID_SPLITPLAYERS:
++		// PS5: split screen, the slots again for this many players on the console
++		if( event != QM_ACTIVATED ) {
++			break;
++		}
++		s_serveroptions.splitPlayers = s_serveroptions.splitPlayersList.curvalue + 2;
++		ServerOptions_InitPlayerItems();
++		ServerOptions_SetPlayerItems();
++		ServerOptions_InitBotNames();
++		ServerOptions_InitLocalPlayers();
++		ServerOptions_SetPlayerItems();
++		break;
+ 	case ID_GO:
+ 		if( event != QM_ACTIVATED ) {
+ 			break;
+@@ -1071,6 +1133,9 @@
+ 	}
+ 
+ 	count = 1;	// skip the first slot, reserved for a human
++	if( s_serveroptions.splitPlayers > 1 ) {
++		count = s_serveroptions.splitPlayers;	// PS5: and the other players on the console
++	}
+ 
+ 	// get info for this map
+ 	arenaInfo = UI_GetArenaInfoByMap( s_serveroptions.mapnamebuffer );
+@@ -1130,6 +1195,40 @@
+ 
+ /*
+ =================
++ServerOptions_InitLocalPlayers
++
++PS5: split screen. The slots after the first that are the other players on
++the console: each called by their name (their user's: cl_splitName<n>), on
++player 1's team to begin with.
++=================
++*/
++static void ServerOptions_InitLocalPlayers( void ) {
++	char	name[16];
++	int		n;
++
++	for( n = 1; n < SPLIT_PLAYERS_MAX; n++ ) {
++		if( n >= s_serveroptions.splitPlayers ) {
++			s_serveroptions.localPlayer[n].generic.flags |= QMF_HIDDEN;
++			s_serveroptions.playerType[n].generic.flags &= ~(QMF_HIDDEN|QMF_INACTIVE);
++			s_serveroptions.playerName[n].generic.flags &= ~QMF_INACTIVE;
++			continue;
++		}
++		s_serveroptions.localPlayer[n].generic.flags &= ~QMF_HIDDEN;
++		s_serveroptions.playerType[n].generic.flags |= QMF_HIDDEN|QMF_INACTIVE;
++		s_serveroptions.playerName[n].generic.flags |= QMF_INACTIVE;
++		s_serveroptions.playerType[n].curvalue = 0;
++		trap_Cvar_VariableStringBuffer( va( "cl_splitName%i", n + 1 ), name, sizeof( name ) );
++		Q_CleanStr( name );
++		Q_strncpyz( s_serveroptions.playerNameBuffers[n], name[0] ? name : va( "Player %i", n + 1 ), sizeof( s_serveroptions.playerNameBuffers[n] ) );
++		if( s_serveroptions.gametype >= GT_TEAM ) {
++			s_serveroptions.playerTeam[n].curvalue = s_serveroptions.playerTeam[0].curvalue;
++		}
++	}
++}
++
++
++/*
++=================
+ ServerOptions_SetMenuItems
+ =================
+ */
+@@ -1183,6 +1282,7 @@
+ 
+ 	// seed bot names
+ 	ServerOptions_InitBotNames();
++	ServerOptions_InitLocalPlayers();
+ 	ServerOptions_SetPlayerItems();
+ }
+ 
+@@ -1246,6 +1346,7 @@
+ 
+ 	memset( &s_serveroptions, 0 ,sizeof(serveroptions_t) );
+ 	s_serveroptions.multiplayer = multiplayer;
++	s_serveroptions.splitPlayers = s_startserver.splitPlayers;
+ 	s_serveroptions.gametype = (int) Com_Clamp(0, ARRAY_LEN(gametype_remap2) - 1,
+ 						trap_Cvar_VariableValue("g_gametype"));
+ 	s_serveroptions.punkbuster.curvalue = Com_Clamp( 0, 1, trap_Cvar_VariableValue( "sv_punkbuster" ) );
+@@ -1258,7 +1359,7 @@
+ 	s_serveroptions.banner.generic.type			= MTYPE_BTEXT;
+ 	s_serveroptions.banner.generic.x			= 320;
+ 	s_serveroptions.banner.generic.y			= 16;
+-	s_serveroptions.banner.string  				= "GAME SERVER";
++	s_serveroptions.banner.string  				= s_serveroptions.splitPlayers > 1 ? "SPLIT SCREEN" : "GAME SERVER";
+ 	s_serveroptions.banner.color  				= color_white;
+ 	s_serveroptions.banner.style  				= UI_CENTER;
+ 
+@@ -1280,6 +1381,19 @@
+ 	s_serveroptions.picframe.focuspic			= GAMESERVER_SELECT;
+ 
+ 	y = 272;
++	if( s_serveroptions.splitPlayers > 1 ) {
++		// PS5: split screen, the players on the console
++		s_serveroptions.splitPlayersList.generic.type		= MTYPE_SPINCONTROL;
++		s_serveroptions.splitPlayersList.generic.name		= "Players:";
++		s_serveroptions.splitPlayersList.generic.flags		= QMF_PULSEIFFOCUS|QMF_SMALLFONT;
++		s_serveroptions.splitPlayersList.generic.id			= ID_SPLITPLAYERS;
++		s_serveroptions.splitPlayersList.generic.callback	= ServerOptions_Event;
++		s_serveroptions.splitPlayersList.generic.x			= OPTIONS_X;
++		s_serveroptions.splitPlayersList.generic.y			= y;
++		s_serveroptions.splitPlayersList.itemnames			= splitPlayers_list;
++		s_serveroptions.splitPlayersList.curvalue			= s_serveroptions.splitPlayers - 2;
++		y += BIGCHAR_HEIGHT+2;
++	}
+ 	if( s_serveroptions.gametype != GT_CTF ) {
+ 		s_serveroptions.fraglimit.generic.type       = MTYPE_FIELD;
+ 		s_serveroptions.fraglimit.generic.name       = "Frag Limit:";
+@@ -1405,6 +1519,19 @@
+ 		s_serveroptions.playerTeam[n].generic.x			= 240;
+ 		s_serveroptions.playerTeam[n].generic.y			= y;
+ 		s_serveroptions.playerTeam[n].itemnames			= playerTeam_list;
++
++		// PS5: split screen, the other players on the console are named as player 1 is
++		// (ServerOptions_InitLocalPlayers shows these in place of the slots' types)
++		if( n > 0 && n < SPLIT_PLAYERS_MAX ) {
++			Com_sprintf( s_serveroptions.localPlayerLabels[n], sizeof( s_serveroptions.localPlayerLabels[n] ), "Player %i", n + 1 );
++			s_serveroptions.localPlayer[n].generic.type		= MTYPE_TEXT;
++			s_serveroptions.localPlayer[n].generic.flags	= QMF_SMALLFONT|QMF_HIDDEN;
++			s_serveroptions.localPlayer[n].generic.x		= 32 + SMALLCHAR_WIDTH;
++			s_serveroptions.localPlayer[n].generic.y		= y;
++			s_serveroptions.localPlayer[n].color			= color_orange;
++			s_serveroptions.localPlayer[n].style			= UI_LEFT|UI_SMALLFONT;
++			s_serveroptions.localPlayer[n].string			= s_serveroptions.localPlayerLabels[n];
++		}
+ 
+ 		y += ( SMALLCHAR_HEIGHT + 4 );
+ 	}
+@@ -1451,6 +1578,9 @@
+ 	Menu_AddItem( &s_serveroptions.menu, &s_serveroptions.botSkill );
+ 	Menu_AddItem( &s_serveroptions.menu, &s_serveroptions.player0 );
+ 	for( n = 0; n < PLAYER_SLOTS; n++ ) {
++		if( n > 0 && n < SPLIT_PLAYERS_MAX ) {
++			Menu_AddItem( &s_serveroptions.menu, &s_serveroptions.localPlayer[n] );	// PS5: split screen
++		}
+ 		if( n != 0 ) {
+ 			Menu_AddItem( &s_serveroptions.menu, &s_serveroptions.playerType[n] );
+ 		}
+@@ -1460,6 +1590,9 @@
+ 		}
+ 	}
+ 
++	if( s_serveroptions.splitPlayers > 1 ) {
++		Menu_AddItem( &s_serveroptions.menu, &s_serveroptions.splitPlayersList );	// PS5: split screen
++	}
+ 	if( s_serveroptions.gametype != GT_CTF ) {
+ 		Menu_AddItem( &s_serveroptions.menu, &s_serveroptions.fraglimit );
+ 	}
 --- a/code/q3_ui/ui_video.c
 +++ b/code/q3_ui/ui_video.c
 @@ -248,6 +248,7 @@

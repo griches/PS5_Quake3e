@@ -40,6 +40,7 @@ MAIN MENU
 #define ID_TEAMARENA		15
 #define ID_MODS					16
 #define ID_EXIT					17
+#define ID_SPLITSCREEN			18	// PS5
 
 #define MAIN_BANNER_MODEL				"models/mapobjects/banner/banner5.md3"
 #define MAIN_MENU_VERTICAL_SPACING		34
@@ -50,6 +51,7 @@ typedef struct {
 
 	menutext_s		singleplayer;
 	menutext_s		multiplayer;
+	menutext_s		splitscreen;	// PS5
 	menutext_s		setup;
 	menutext_s		demos;
 	menutext_s		cinematics;
@@ -69,6 +71,10 @@ typedef struct {
 } errorMessage_t;
 
 static errorMessage_t s_errorMessage;
+
+// PS5: split screen, a skirmish for players on this console (ps5/ui/ui_startserver.c)
+void UI_SplitScreenMenu( void );
+
 
 /*
 =================
@@ -102,6 +108,10 @@ void Main_MenuEvent (void* ptr, int event) {
 
 	case ID_MULTIPLAYER:
 		UI_ArenaServersMenu();
+		break;
+
+	case ID_SPLITSCREEN:
+		UI_SplitScreenMenu();
 		break;
 
 	case ID_SETUP:
@@ -272,6 +282,8 @@ void UI_MainMenu( void ) {
 	int		style = UI_CENTER | UI_DROPSHADOW;
 
 	trap_Cvar_Set( "sv_killserver", "1" );
+	// PS5: split screen is for the skirmish that asks for it (UI_SplitScreenMenu)
+	trap_Cvar_Set( "cl_splitPlayers", "1" );
 
 	// PS5: no CD key prompt at start-up (it only opened the on-screen keyboard, and
 	// Accept dismissed it); the key can still be entered under Setup, CD Key
@@ -333,6 +345,17 @@ void UI_MainMenu( void ) {
 	s_main.multiplayer.string				= "MULTIPLAYER";
 	s_main.multiplayer.color				= color_red;
 	s_main.multiplayer.style				= style;
+
+	y += MAIN_MENU_VERTICAL_SPACING;
+	s_main.splitscreen.generic.type			= MTYPE_PTEXT;
+	s_main.splitscreen.generic.flags		= QMF_CENTER_JUSTIFY|QMF_PULSEIFFOCUS;
+	s_main.splitscreen.generic.x			= 320;
+	s_main.splitscreen.generic.y			= y;
+	s_main.splitscreen.generic.id			= ID_SPLITSCREEN;
+	s_main.splitscreen.generic.callback		= Main_MenuEvent;
+	s_main.splitscreen.string				= "SPLIT SCREEN";
+	s_main.splitscreen.color				= color_red;
+	s_main.splitscreen.style				= style;
 
 	y += MAIN_MENU_VERTICAL_SPACING;
 	s_main.setup.generic.type				= MTYPE_PTEXT;
@@ -407,6 +430,7 @@ void UI_MainMenu( void ) {
 
 	Menu_AddItem( &s_main.menu,	&s_main.singleplayer );
 	Menu_AddItem( &s_main.menu,	&s_main.multiplayer );
+	Menu_AddItem( &s_main.menu,	&s_main.splitscreen );
 	Menu_AddItem( &s_main.menu,	&s_main.setup );
 	Menu_AddItem( &s_main.menu,	&s_main.demos );
 	Menu_AddItem( &s_main.menu,	&s_main.cinematics );

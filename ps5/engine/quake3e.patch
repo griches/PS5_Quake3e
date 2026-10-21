@@ -1,0 +1,2005 @@
+--- a/code/client/cl_cgame.c
++++ b/code/client/cl_cgame.c
+@@ -44,10 +44,17 @@
+ /*
+ ====================
+ CL_GetGlconfig
++
++PS5: split screen, the current player's part of the screen is the cgame's
++screen (CL_PlayerView); what it draws is moved there (CL_CgameSystemCalls).
+ ====================
+ */
+ static void CL_GetGlconfig( glconfig_t *glconfig ) {
++	int x, y;
++
+ 	*glconfig = cls.glconfig;
++	CL_PlayerView( cl_localPlayer, &x, &y, &glconfig->vidWidth, &glconfig->vidHeight );
++	glconfig->windowAspect = (float)glconfig->vidWidth / glconfig->vidHeight;
+ }
+ 
+ 
+@@ -279,6 +286,15 @@
+ 	cmd = Cmd_Argv(0);
+ 	argc = Cmd_Argc();
+ 
++	if ( !strcmp( cmd, "disconnect" ) && cl_localPlayer ) {
++		// PS5: split screen, the server let another local player go: they leave
++		// after this frame (CL_Frame), and the cgame never sees the command
++		Com_Printf( "Player %i left the game: %s\n", cl_localPlayer + 1, argc >= 2 ? Cmd_Argv( 1 ) : "server disconnected" );
++		cl_lp->dropped = qtrue;
++		Cmd_Clear();
++		return qfalse;
++	}
++
+ 	if ( !strcmp( cmd, "disconnect" ) ) {
+ 		// https://zerowing.idsoftware.com/bugzilla/show_bug.cgi?id=552
+ 		// allow server to indicate why they were disconnected
+@@ -386,6 +402,16 @@
+ */
+ void CL_ShutdownCGame( void ) {
+ 
++	if ( cl_localPlayer ) {
++		// PS5: split screen, another local player's: the rest is player 1's
++		if ( cgvm ) {
++			VM_Call( cgvm, 0, CG_SHUTDOWN );
++			VM_Free( cgvm );
++			cgvm = NULL;
++		}
++		return;
++	}
++
+ 	Key_SetCatcher( Key_GetCatcher( ) & ~KEYCATCH_CGAME );
+ 	cls.cgameStarted = qfalse;
+ 
+@@ -475,9 +501,14 @@
+ ====================
+ */
+ static intptr_t CL_CgameSystemCalls( intptr_t *args ) {
++	int x, y, width, height;
++
+ 	switch( args[0] ) {
+ 	case CG_PRINT:
+-		Com_Printf( "%s", (const char*)VMA(1) );
++		// PS5: split screen, the other local players' cgames print what player 1's does
++		if ( cl_localPlayer == 0 ) {
++			Com_Printf( "%s", (const char*)VMA(1) );
++		}
+ 		return 0;
+ 	case CG_ERROR:
+ 		Com_Error( ERR_DROP, "%s", (const char*)VMA(1) );
+@@ -585,7 +616,11 @@
+ 		S_StartLocalSound( args[1], args[2] );
+ 		return 0;
+ 	case CG_S_CLEARLOOPINGSOUNDS:
+-		S_ClearLoopingSounds(args[1]);
++		// PS5: split screen, player 1's cgame clears them for the frame, and
++		// every local player's adds what it hears (the sounds are an entity's each)
++		if ( cl_localPlayer == 0 ) {
++			S_ClearLoopingSounds(args[1]);
++		}
+ 		return 0;
+ 	case CG_S_ADDLOOPINGSOUND:
+ 		S_AddLoopingSound( args[1], VMA(2), VMA(3), args[4] );
+@@ -605,10 +640,14 @@
+ 	case CG_S_REGISTERSOUND:
+ 		return S_RegisterSound( VMA(1), args[2] );
+ 	case CG_S_STARTBACKGROUNDTRACK:
+-		S_StartBackgroundTrack( VMA(1), VMA(2) );
++		if ( cl_localPlayer == 0 ) { // PS5: split screen, player 1's music
++			S_StartBackgroundTrack( VMA(1), VMA(2) );
++		}
+ 		return 0;
+ 	case CG_R_LOADWORLDMAP:
+-		re.LoadWorld( VMA(1) );
++		if ( cl_localPlayer == 0 ) { // PS5: split screen, player 1's cgame loaded it
++			re.LoadWorld( VMA(1) );
++		}
+ 		return 0;
+ 	case CG_R_REGISTERMODEL:
+ 		return re.RegisterModel( VMA(1) );
+@@ -642,13 +681,23 @@
+ 		re.AddAdditiveLightToScene( VMA(1), VMF(2), VMF(3), VMF(4), VMF(5) );
+ 		return 0;
+ 	case CG_R_RENDERSCENE:
+-		re.RenderScene( VMA(1) );
++		CL_PlayerView( cl_localPlayer, &x, &y, &width, &height );
++		if ( x || y ) {
++			// PS5: split screen, into the player's part of the screen
++			refdef_t refdef = *(const refdef_t *)VMA(1);
++			refdef.x += x;
++			refdef.y += y;
++			re.RenderScene( &refdef );
++		} else {
++			re.RenderScene( VMA(1) );
++		}
+ 		return 0;
+ 	case CG_R_SETCOLOR:
+ 		re.SetColor( VMA(1) );
+ 		return 0;
+ 	case CG_R_DRAWSTRETCHPIC:
+-		re.DrawStretchPic( VMF(1), VMF(2), VMF(3), VMF(4), VMF(5), VMF(6), VMF(7), VMF(8), args[9] );
++		CL_PlayerView( cl_localPlayer, &x, &y, &width, &height ); // PS5: split screen
++		re.DrawStretchPic( VMF(1) + x, VMF(2) + y, VMF(3), VMF(4), VMF(5), VMF(6), VMF(7), VMF(8), args[9] );
+ 		return 0;
+ 	case CG_R_MODELBOUNDS:
+ 		re.ModelBounds( args[1], VMA(2), VMA(3) );
+@@ -735,7 +784,9 @@
+ 		return botlib_export->PC_SourceFileAndLine( args[1], VMA(2), VMA(3) );
+ 
+ 	case CG_S_STOPBACKGROUNDTRACK:
+-		S_StopBackgroundTrack();
++		if ( cl_localPlayer == 0 ) { // PS5: split screen, player 1's music
++			S_StopBackgroundTrack();
++		}
+ 		return 0;
+ 
+ 	case CG_REAL_TIME:
+@@ -878,7 +929,8 @@
+ 			interpret = VMI_COMPILED;
+ 	}
+ 
+-	cgvm = VM_Create( VM_CGAME, CL_CgameSystemCalls, CL_DllSyscall, interpret );
++	// PS5: split screen, each local player's cgame is a VM of its own
++	cgvm = VM_Create( cl_localPlayer ? VM_CGAME_SPLIT + cl_localPlayer - 1 : VM_CGAME, CL_CgameSystemCalls, CL_DllSyscall, interpret );
+ 	if ( !cgvm ) {
+ 		Com_Error( ERR_DROP, "VM_Create on cgame failed" );
+ 	}
+@@ -901,6 +953,11 @@
+ 
+ 	Com_Printf( "CL_InitCGame: %5.2f seconds\n", (t2-t1)/1000.0 );
+ 
++	if ( cl_localPlayer ) {
++		// PS5: split screen, player 1's cgame registered and paged in the rest
++		return;
++	}
++
+ 	// have the renderer touch all its images, so they are present
+ 	// on the card even if the driver does deferred loading
+ 	re.EndRegistration();
+@@ -1038,6 +1095,20 @@
+ 	}
+ 	cls.state = CA_ACTIVE;
+ 
++	if ( cl_localPlayer ) {
++		// PS5: split screen. Another local player: a team game puts them with the
++		// spectators, so they join the team the menu chose, once a visit.
++		const char *info = cl.gameState.stringData + cl.gameState.stringOffsets[ CS_SERVERINFO ];
++		const char *team = Cvar_VariableString( va( "cl_splitTeam%i", cl_localPlayer + 1 ) );
++		cl.serverTimeDelta = cl.snap.serverTime - cls.realtime;
++		cl.oldServerTime = cl.snap.serverTime;
++		if ( !cl_lp->teamSent && *team && atoi( Info_ValueForKey( info, "g_gametype" ) ) >= GT_TEAM ) {
++			CL_AddReliableCommand( va( "team %s", team ), qfalse );
++		}
++		cl_lp->teamSent = qtrue;
++		return;
++	}
++
+ 	// clear old game so we will not switch back to old mod on disconnect
+ 	CL_ResetOldGame();
+ 
+--- a/code/client/cl_input.c
++++ b/code/client/cl_input.c
+@@ -24,7 +24,6 @@
+ #include "client.h"
+ 
+ static unsigned frame_msec;
+-static int old_com_frameTime;
+ 
+ /*
+ ===============================================================================
+@@ -54,11 +53,34 @@
+ 	qboolean	wasPressed;		// set when down, not cleared when up
+ } kbutton_t;
+ 
+-static kbutton_t in_left, in_right, in_forward, in_back;
+-static kbutton_t in_lookup, in_lookdown, in_moveleft, in_moveright;
+-static kbutton_t in_strafe, in_speed;
+-static kbutton_t in_up, in_down;
+-static kbutton_t in_buttons[16];
++// PS5: split screen, each local player's (the current player's: cl_localPlayer)
++typedef struct {
++	kbutton_t	left, right, forward, back;
++	kbutton_t	lookup, lookdown, moveleft, moveright;
++	kbutton_t	strafe, speed;
++	kbutton_t	up, down;
++	kbutton_t	buttons[16];
++	qboolean	mlooking;
++	int			oldFrameTime;		// com_frameTime as the last usercmd was made
++} playerButtons_t;
++
++static playerButtons_t in_players[ MAX_LOCAL_PLAYERS ];
++
++#define	in_left			( in_players[ cl_localPlayer ].left )
++#define	in_right		( in_players[ cl_localPlayer ].right )
++#define	in_forward		( in_players[ cl_localPlayer ].forward )
++#define	in_back			( in_players[ cl_localPlayer ].back )
++#define	in_lookup		( in_players[ cl_localPlayer ].lookup )
++#define	in_lookdown		( in_players[ cl_localPlayer ].lookdown )
++#define	in_moveleft		( in_players[ cl_localPlayer ].moveleft )
++#define	in_moveright	( in_players[ cl_localPlayer ].moveright )
++#define	in_strafe		( in_players[ cl_localPlayer ].strafe )
++#define	in_speed		( in_players[ cl_localPlayer ].speed )
++#define	in_up			( in_players[ cl_localPlayer ].up )
++#define	in_down			( in_players[ cl_localPlayer ].down )
++#define	in_buttons		( in_players[ cl_localPlayer ].buttons )
++#define	in_mlooking		( in_players[ cl_localPlayer ].mlooking )
++#define	old_com_frameTime	( in_players[ cl_localPlayer ].oldFrameTime )
+ 
+ static cvar_t *cl_nodelta;
+ 
+@@ -85,8 +107,6 @@
+ static cvar_t *m_forward;
+ static cvar_t *m_side;
+ static cvar_t *m_filter;
+-
+-static qboolean in_mlooking;
+ 
+ static void IN_CenterView( void ) {
+ 	cl.viewangles[PITCH] = -SHORT2ANGLE(cl.snap.ps.delta_angles[PITCH]);
+@@ -397,6 +417,47 @@
+ 
+ /*
+ =================
++CL_PlayerMouseEvent
++
++PS5: split screen. Another local player's mouse movement (their right stick
++and gyro): their view's in play, while a menu's pointer is everyone's.
++=================
++*/
++void CL_PlayerMouseEvent( int player, int dx, int dy ) {
++	clientActive_t *active;
++
++	if ( (unsigned)player >= MAX_LOCAL_PLAYERS || player >= CL_SplitViews() ) {
++		return;
++	}
++
++	if ( Key_GetCatcher() & KEYCATCH_UI ) {
++		CL_MouseEvent( dx, dy );
++	} else if ( Key_GetCatcher() == 0 && CL_PlayerPlaying( player ) ) {
++		active = &cl_localPlayers[ player ].active;
++		active->mouseDx[ active->mouseIndex ] += dx;
++		active->mouseDy[ active->mouseIndex ] += dy;
++	}
++}
++
++
++/*
++=================
++CL_PlayerJoystickEvent
++
++PS5: split screen. Another local player's joystick (their left stick).
++=================
++*/
++void CL_PlayerJoystickEvent( int player, int axis, int value, int time ) {
++	if ( (unsigned)player >= MAX_LOCAL_PLAYERS || axis < 0 || axis >= MAX_JOYSTICK_AXIS ) {
++		return;
++	}
++
++	cl_localPlayers[ player ].active.joystickAxis[ axis ] = value;
++}
++
++
++/*
++=================
+ CL_JoystickMove
+ =================
+ */
+--- a/code/client/cl_keys.c
++++ b/code/client/cl_keys.c
+@@ -727,11 +727,131 @@
+ 		CL_KeyDownEvent( key, time );
+ 	else
+ 		CL_KeyUpEvent( key, time );
++}
++
++
++/*
++===================
++CL_PlayerBinding
++
++PS5: split screen. Another local player's binding for a key (they share player
++1's bindings), as Key_ParseBinding, each command run as theirs (CL_Player_f).
++===================
++*/
++static void CL_PlayerBinding( int player, int key, qboolean down, unsigned time )
++{
++	char buf[ MAX_STRING_CHARS ], *p, *end;
++
++	if( !keys[key].binding || keys[key].binding[0] == '\0' )
++		return;
++
++	p = buf;
++
++	Q_strncpyz( buf, keys[key].binding, sizeof( buf ) );
++
++	while( 1 )
++	{
++		while ( isspace( *p ) )
++			p++;
++		end = strchr( p, ';' );
++		if ( end )
++			*end = '\0';
++		if ( *p == '+' )
++		{
++			// button commands add keynum and time as parameters
++			Cbuf_AddText( va( "player %i %c%s %d %d\n", player + 1, ( down ) ? '+' : '-', p + 1, key, time ) );
++		}
++		else if ( down && *p )
++		{
++			// normal commands only execute on key press
++			Cbuf_AddText( va( "player %i %s\n", player + 1, p ) );
++		}
++		if( !end )
++			break;
++		p = end + 1;
++	}
++}
++
++
++// PS5: split screen. Where each key another local player holds went down: to their
++// binding in play, or to the menus and console everyone shares.
++typedef enum {
++	PLAYER_KEY_UP,
++	PLAYER_KEY_BOUND,
++	PLAYER_KEY_SHARED
++} playerKey_t;
++
++static byte playerKeys[ MAX_LOCAL_PLAYERS ][ MAX_KEYS ];
++
++
++/*
++===================
++CL_PlayerKeyEvent
++
++PS5: split screen. Another local player's key. In play it does what it is
++bound to, for them; in a menu, the console or a chat line (everyone's) it is
++player 1's key, and so is ESCAPE (OPTIONS: the menu). A key that went down for
++one goes up for it. A player without a part of the screen has no keys.
++===================
++*/
++void CL_PlayerKeyEvent( int player, int key, qboolean down, unsigned time )
++{
++	byte *state;
++
++	if ( (unsigned)player >= MAX_LOCAL_PLAYERS || (unsigned)key >= MAX_KEYS ) {
++		return;
++	}
++
++	state = &playerKeys[ player ][ key ];
++
++	if ( !down ) {
++		if ( *state == PLAYER_KEY_BOUND ) {
++			CL_PlayerBinding( player, key, qfalse, time );
++		} else if ( *state == PLAYER_KEY_SHARED ) {
++			CL_KeyEvent( key, qfalse, time );
++		}
++		*state = PLAYER_KEY_UP;
++		return;
++	}
++
++	if ( *state != PLAYER_KEY_UP || player >= CL_SplitViews() ) {
++		return;
++	}
++
++	if ( Key_GetCatcher() || key == K_ESCAPE ) {
++		*state = PLAYER_KEY_SHARED;
++		CL_KeyEvent( key, qtrue, time );
++	} else if ( CL_PlayerPlaying( player ) ) {
++		*state = PLAYER_KEY_BOUND;
++		CL_PlayerBinding( player, key, qtrue, time );
++	}
+ }
+ 
+ 
+ /*
+ ===================
++CL_ClearPlayerKeys
++
++PS5: split screen, the other local players' keys go up (Key_ClearStates).
++===================
++*/
++static void CL_ClearPlayerKeys( void )
++{
++	int player, key;
++
++	for ( player = 1; player < MAX_LOCAL_PLAYERS; player++ ) {
++		for ( key = 0; key < MAX_KEYS; key++ ) {
++			if ( playerKeys[ player ][ key ] == PLAYER_KEY_BOUND ) {
++				CL_PlayerBinding( player, key, qfalse, 0 );
++			}
++			playerKeys[ player ][ key ] = PLAYER_KEY_UP;
++		}
++	}
++}
++
++
++/*
++===================
+ CL_CharEvent
+ 
+ Normal keyboard characters, already shifted / capslocked / etc
+@@ -773,6 +893,8 @@
+ {
+ 	int		i;
+ 
++	CL_ClearPlayerKeys(); // PS5: split screen
++
+ 	anykeydown = 0;
+ 
+ 	for ( i = 0 ; i < MAX_KEYS ; i++ )
+--- a/code/client/cl_main.c
++++ b/code/client/cl_main.c
+@@ -94,11 +94,15 @@
+ cvar_t *cl_depthbits;
+ cvar_t *cl_drawBuffer;
+ 
+-clientActive_t		cl;
+-clientConnection_t	clc;
+ clientStatic_t		cls;
+-vm_t				*cgvm = NULL;
+ 
++// PS5: split screen, the local players (client.h)
++localPlayer_t		cl_localPlayers[ MAX_LOCAL_PLAYERS ];
++localPlayer_t		*cl_lp = &cl_localPlayers[ 0 ];
++int					cl_localPlayer;
++static int			cl_views = 1;	// the parts of the screen, set as a local map starts (CL_MapLoading)
++static cvar_t		*cl_splitPlayers;
++
+ netadr_t			rcon_address;
+ 
+ char				cl_oldGame[ MAX_QPATH ];
+@@ -130,6 +134,7 @@
+ static serverStatus_t cl_serverStatusList[MAX_SERVERSTATUSREQUESTS];
+ 
+ static void CL_CheckForResend( void );
++static void CL_SendPureChecksums( void );
+ static void CL_ShowIP_f( void );
+ static void CL_ServerStatus_f( void );
+ static void CL_ServerStatusResponse( const netadr_t *from, msg_t *msg );
+@@ -147,8 +152,400 @@
+ static void CL_InitGLimp_Cvars( void );
+ 
+ static void CL_NextDemo( void );
++
++/*
++=======================================================================
++
++PS5: SPLIT SCREEN
++
++Players 2 and on (as many as cl_splitPlayers asks for, up to
++MAX_LOCAL_PLAYERS) play on the local server beside player 1, each an ordinary
++client of it with a loopback channel of their own, a cgame of their own and a
++part of the screen. The cgame is the stock one: it is told its part of the
++screen is the whole screen, and what it draws is moved into its part.
++
++=======================================================================
++*/
++
++/*
++=====================
++CL_SetLocalPlayer
++
++Makes a local player the current one, whose cl, clc, cgvm and cls.state
++the client's code works with; returns the player that was current.
++=====================
++*/
++int CL_SetLocalPlayer( int player ) {
++	const int previous = cl_localPlayer;
++
++	if ( (unsigned)player >= MAX_LOCAL_PLAYERS || player == previous ) {
++		return previous;
++	}
++
++	cl_lp->state = cls.state;
++	cl_localPlayer = player;
++	cl_lp = &cl_localPlayers[ player ];
++	cls.state = cl_lp->state;
++
++	return previous;
++}
++
++
++/*
++=====================
++CL_PlayerState
++=====================
++*/
++connstate_t CL_PlayerState( int player ) {
++	return player == cl_localPlayer ? cls.state : cl_localPlayers[ player ].state;
++}
++
++
++/*
++=====================
++CL_SplitViews
++
++The parts of the screen, one for each local player: 1 without split screen
++(not on a local server, or cl_splitPlayers was 1 when its map started).
++=====================
++*/
++int CL_SplitViews( void ) {
++	const connstate_t state = CL_PlayerState( 0 );
++
++	if ( cl_views > 1 && state >= CA_CONNECTED && state != CA_CINEMATIC && com_sv_running && com_sv_running->integer ) {
++		return cl_views;
++	}
++
++	return 1;
++}
++
++
++/*
++=====================
++CL_PlayerView
++
++A player's part of the screen, in pixels. Two players have a half each, side
++by side, the whole height of the screen (each sees as far around as on a 4:3
++screen, and a little further up and down); three or four have a quarter each,
++players 1 and 2 at the top. A thin black line keeps the parts apart.
++=====================
++*/
++void CL_PlayerView( int player, int *x, int *y, int *width, int *height ) {
++	const int views = CL_SplitViews();
++	const int gap = views > 1 ? MAX( 2, cls.glconfig.vidHeight / 270 ) & ~1 : 0;
++
++	if ( views <= 1 ) {
++		*x = *y = 0;
++		*width = cls.glconfig.vidWidth;
++		*height = cls.glconfig.vidHeight;
++	} else if ( views == 2 ) {
++		*width = ( cls.glconfig.vidWidth - gap ) / 2;
++		*height = cls.glconfig.vidHeight;
++		*x = ( player & 1 ) * ( *width + gap );
++		*y = 0;
++	} else {
++		*width = ( cls.glconfig.vidWidth - gap ) / 2;
++		*height = ( cls.glconfig.vidHeight - gap ) / 2;
++		*x = ( player & 1 ) * ( *width + gap );
++		*y = ( player >> 1 ) * ( *height + gap );
++	}
++}
++
++
++/*
++=====================
++CL_PlayerPlaying
++
++A player with a part of the screen, in the game.
++=====================
++*/
++qboolean CL_PlayerPlaying( int player ) {
++	return player < CL_SplitViews() && CL_PlayerState( player ) == CA_ACTIVE;
++}
++
++
++/*
++=====================
++CL_PlayerUserinfo
++
++The userinfo a local player sends: player 1's cvars, with cl_splitName<n> and
++cl_splitModel<n> for the others. A player without a name of their own is
++"Player <n>"; one without a model takes the first of the split screen models
++that player 1 and the players before them don't wear.
++=====================
++*/
++static const char *CL_PlayerUserinfo( qboolean *truncated ) {
++	static const char *const models[] = { "visor", "major", "grunt", "ranger", "slash" };
++	static char info[ MAX_INFO_STRING * 2 ];
++	char taken[ MAX_LOCAL_PLAYERS ][ MAX_QPATH ];
++	const char *name, *model;
++	int player, i, j;
++
++	Q_strncpyz( info, Cvar_InfoString( CVAR_USERINFO, truncated ), sizeof( info ) );
++	if ( cl_localPlayer == 0 ) {
++		return info;
++	}
+ 
++	// the models of player 1 and the players before this one
++	Q_strncpyz( taken[ 0 ], Cvar_VariableString( "model" ), sizeof( taken[ 0 ] ) );
++	for ( player = 1; player <= cl_localPlayer; player++ ) {
++		model = Cvar_VariableString( va( "cl_splitModel%i", player + 1 ) );
++		for ( i = 0; *model == '\0' && i < ARRAY_LEN( models ); i++ ) {
++			for ( j = 0; j < player && Q_stricmpn( taken[ j ], models[ i ], strlen( models[ i ] ) ); j++ )
++				;
++			if ( j == player ) {
++				model = models[ i ];
++			}
++		}
++		Q_strncpyz( taken[ player ], *model ? model : "visor", sizeof( taken[ player ] ) );
++	}
++
++	name = Cvar_VariableString( va( "cl_splitName%i", cl_localPlayer + 1 ) );
++	Info_SetValueForKey_s( info, MAX_USERINFO_LENGTH, "name", *name ? name : va( "Player %i", cl_localPlayer + 1 ) );
++	Info_SetValueForKey_s( info, MAX_USERINFO_LENGTH, "model", taken[ cl_localPlayer ] );
++	Info_SetValueForKey_s( info, MAX_USERINFO_LENGTH, "headmodel", taken[ cl_localPlayer ] );
++	Info_SetValueForKey_s( info, MAX_USERINFO_LENGTH, "team_model", taken[ cl_localPlayer ] );
++	Info_SetValueForKey_s( info, MAX_USERINFO_LENGTH, "team_headmodel", taken[ cl_localPlayer ] );
++
++	return info;
++}
++
++
+ /*
++=====================
++CL_QPort
++
++The qport the server tells a local player's packets apart by (they come
++from one address): net_qport, and the next for each player after the first.
++=====================
++*/
++static int CL_QPort( void ) {
++	return ( Cvar_VariableIntegerValue( "net_qport" ) + cl_localPlayer ) & 0xffff;
++}
++
++
++/*
++=====================
++CL_SplitJoin
++
++A player after the first joins the local server (with player 1 current).
++=====================
++*/
++static void CL_SplitJoin( int player ) {
++	const int previous = CL_SetLocalPlayer( player );
++
++	CL_ClearState();
++	Com_Memset( &clc, 0, sizeof( clc ) );
++	cl_lp->loadPending = qfalse;
++	cl_lp->teamSent = qfalse;
++	cl_lp->userinfo[0] = '\0';
++
++	NET_StringToAdr( "localhost", &clc.serverAddress, NA_UNSPEC );
++	clc.serverAddress.port = player; // the player's loopback channel
++	cls.state = CA_CHALLENGING; // we don't need a challenge on the localhost
++	clc.connectTime = cls.realtime - RECONNECT_TIMEOUT; // send the connect now
++	CL_CheckForResend();
++
++	CL_SetLocalPlayer( previous );
++}
++
++
++/*
++=====================
++CL_SplitLeave
++
++A player after the first leaves the server.
++=====================
++*/
++static void CL_SplitLeave( int player ) {
++	const int previous = CL_SetLocalPlayer( player );
++
++	if ( cgvm ) {
++		CL_ShutdownCGame();
++	}
++
++	if ( cls.state >= CA_CONNECTED && cls.state != CA_CINEMATIC ) {
++		CL_AddReliableCommand( "disconnect", qtrue );
++		CL_WritePacket( 2 );
++	}
++
++	CL_ClearState();
++	Com_Memset( &clc, 0, sizeof( clc ) );
++	cls.state = CA_DISCONNECTED;
++	cl_lp->loadPending = qfalse;
++
++	CL_SetLocalPlayer( previous );
++}
++
++
++/*
++=====================
++CL_SplitSync
++
++Each frame, with player 1 current: the players after the first join the
++server while the screen has a part for them, and leave when it has none.
++=====================
++*/
++static void CL_SplitSync( void ) {
++	const int views = CL_SplitViews();
++	int player;
++
++	for ( player = 1; player < MAX_LOCAL_PLAYERS; player++ ) {
++		const localPlayer_t *lp = &cl_localPlayers[ player ];
++		if ( player < views && !lp->dropped ) {
++			if ( lp->state <= CA_DISCONNECTED ) {
++				CL_SplitJoin( player );
++			}
++		} else if ( lp->state > CA_DISCONNECTED ) {
++			CL_SplitLeave( player );
++		}
++	}
++}
++
++
++/*
++=====================
++CL_SplitLoad
++
++The current player, after the first, loads the map once player 1 has (the
++gamestate may come first: CL_ParseGamestate). Player 1's loading clears the
++client's memory; the others' use the world, the sounds and the pictures
++player 1's cgame loaded.
++=====================
++*/
++static void CL_SplitLoad( void ) {
++	const connstate_t first = CL_PlayerState( 0 );
++
++	if ( !cl_lp->loadPending || first < CA_PRIMED || first == CA_CINEMATIC ) {
++		return;
++	}
++
++	cl_lp->loadPending = qfalse;
++	if ( cgvm ) {
++		CL_ShutdownCGame(); // a gamestate again, on the same map
++	}
++	cls.state = CA_LOADING;
++	CL_InitCGame();
++	CL_SendPureChecksums();
++	CL_WritePacket( 2 );
++}
++
++
++/*
++=====================
++CL_ShutdownSplitCGames
++
++The cgames of the players after the first.
++=====================
++*/
++static void CL_ShutdownSplitCGames( void ) {
++	const int previous = cl_localPlayer;
++	int player;
++
++	for ( player = 1; player < MAX_LOCAL_PLAYERS; player++ ) {
++		if ( cl_localPlayers[ player ].cgame ) {
++			CL_SetLocalPlayer( player );
++			CL_ShutdownCGame();
++		}
++	}
++
++	CL_SetLocalPlayer( previous );
++}
++
++
++/*
++=====================
++CL_InitSplitCGames
++
++After vid_restart: the cgames of the players after the first that had one.
++=====================
++*/
++static void CL_InitSplitCGames( void ) {
++	const int previous = cl_localPlayer;
++	int player;
++
++	for ( player = 1; player < MAX_LOCAL_PLAYERS; player++ ) {
++		const connstate_t state = cl_localPlayers[ player ].state;
++		if ( state > CA_CONNECTED && state != CA_CINEMATIC ) {
++			CL_SetLocalPlayer( player );
++			CL_InitCGame();
++			CL_SendPureChecksums();
++		}
++	}
++
++	CL_SetLocalPlayer( previous );
++}
++
++
++/*
++=====================
++CL_PlayerPacketEvent
++
++A packet on a local player's loopback channel.
++=====================
++*/
++void CL_PlayerPacketEvent( int player, const netadr_t *from, msg_t *msg ) {
++	int previous;
++
++	if ( player == 0 && cl_localPlayer == 0 ) {
++		CL_PacketEvent( from, msg );
++		return;
++	}
++
++	previous = CL_SetLocalPlayer( player );
++	if ( player == 0 || cls.state > CA_DISCONNECTED ) {
++		CL_PacketEvent( from, msg );
++	}
++	CL_SetLocalPlayer( previous );
++}
++
++
++/*
++=====================
++CL_Player_f
++
++player <n> <command>: a command as player n, for the bindings of the players
++after the first (CL_PlayerKeyEvent), and for the console.
++=====================
++*/
++static void CL_Player_f( void ) {
++	char text[ MAX_STRING_CHARS ];
++	const char *s;
++	int player, previous, i;
++
++	if ( Cmd_Argc() < 3 ) {
++		Com_Printf( "usage: player <1-%i> <command>\n", MAX_LOCAL_PLAYERS );
++		return;
++	}
++
++	player = atoi( Cmd_Argv( 1 ) ) - 1;
++	if ( (unsigned)player >= MAX_LOCAL_PLAYERS ) {
++		Com_Printf( "No player %s\n", Cmd_Argv( 1 ) );
++		return;
++	}
++	if ( player >= CL_SplitViews() ) {
++		return; // not playing
++	}
++
++	// the command as it was written, after "player <n>"
++	s = Cmd_Cmd();
++	for ( i = 0; i < 2; i++ ) {
++		while ( *s == ' ' || *s == '\t' )
++			s++;
++		while ( *s && *s != ' ' && *s != '\t' )
++			s++;
++	}
++	while ( *s == ' ' || *s == '\t' )
++		s++;
++	Q_strncpyz( text, s, sizeof( text ) );
++
++	previous = CL_SetLocalPlayer( player );
++	Cmd_ExecuteString( text );
++	CL_SetLocalPlayer( previous );
++}
++
++
++/*
+ ===============
+ CL_CDDialog
+ 
+@@ -986,6 +1383,7 @@
+ */
+ static void CL_ShutdownVMs( void )
+ {
++	CL_ShutdownSplitCGames();
+ 	CL_ShutdownCGame();
+ 	CL_ShutdownUI();
+ }
+@@ -1074,6 +1472,8 @@
+ =====================
+ */
+ qboolean CL_MapLoading( void ) {
++	int i;
++
+ 	if ( com_dedicated->integer ) {
+ 		cls.state = CA_DISCONNECTED;
+ 		Key_SetCatcher( KEYCATCH_CONSOLE );
+@@ -1086,6 +1486,12 @@
+ 
+ 	Con_Close();
+ 	Key_SetCatcher( 0 );
++
++	// PS5: split screen. Everyone the server let go may come back.
++	CL_SetLocalPlayer( 0 );
++	for ( i = 0; i < MAX_LOCAL_PLAYERS; i++ ) {
++		cl_localPlayers[ i ].dropped = qfalse;
++	}
+ 
+ 	// if we are already connected to the local host, stay connected
+ 	if ( cls.state >= CA_CONNECTED && !Q_stricmp( cls.servername, "localhost" ) ) {
+@@ -1094,6 +1500,17 @@
+ 		Com_Memset( clc.serverMessage, 0, sizeof( clc.serverMessage ) );
+ 		Com_Memset( &cl.gameState, 0, sizeof( cl.gameState ) );
+ 		clc.lastPacketSentTime = cls.realtime - RETRANSMIT_TIMEOUT; // send packet immediately
++		// PS5: and so do the other local players
++		for ( i = 1; i < MAX_LOCAL_PLAYERS; i++ ) {
++			localPlayer_t *lp = &cl_localPlayers[ i ];
++			if ( lp->state >= CA_CONNECTED && lp->state != CA_CINEMATIC ) {
++				lp->state = CA_CONNECTED;
++				lp->loadPending = qfalse;
++				Com_Memset( lp->connection.serverMessage, 0, sizeof( lp->connection.serverMessage ) );
++				Com_Memset( &lp->active.gameState, 0, sizeof( lp->active.gameState ) );
++				lp->connection.lastPacketSentTime = cls.realtime - RETRANSMIT_TIMEOUT;
++			}
++		}
+ 		cls.framecount++;
+ 		SCR_UpdateScreen();
+ 	} else {
+@@ -1111,6 +1528,11 @@
+ 		CL_CheckForResend();
+ 	}
+ 
++	// PS5: split screen. A part of the screen for each player cl_splitPlayers asks
++	// for, until the next map; the players after the first join once player 1 has
++	// (CL_SplitSync).
++	cl_views = cl_splitPlayers->integer;
++
+ 	return qtrue;
+ }
+ 
+@@ -1202,6 +1624,7 @@
+ qboolean CL_Disconnect( qboolean showMainMenu ) {
+ 	static qboolean cl_disconnecting = qfalse;
+ 	qboolean cl_restarted = qfalse;
++	int i;
+ 
+ 	if ( !com_cl_running || !com_cl_running->integer ) {
+ 		return cl_restarted;
+@@ -1213,6 +1636,10 @@
+ 
+ 	cl_disconnecting = qtrue;
+ 
++	// PS5: split screen, the other local players go with player 1
++	CL_SetLocalPlayer( 0 );
++	CL_ShutdownSplitCGames();
++
+ 	// Stop demo recording
+ 	if ( clc.demorecording ) {
+ 		CL_StopRecord_f();
+@@ -1265,6 +1692,14 @@
+ 		return qfalse;
+ 	}
+ 
++	// PS5: split screen
++	for ( i = 1; i < MAX_LOCAL_PLAYERS; i++ ) {
++		if ( cl_localPlayers[ i ].state > CA_DISCONNECTED ) {
++			CL_SplitLeave( i );
++		}
++	}
++	cl_views = 1;
++
+ 	// send a disconnect message to the server
+ 	// send it a few times in case one is dropped
+ 	if ( cls.state >= CA_CONNECTED && cls.state != CA_CINEMATIC && !clc.demoplaying ) {
+@@ -1784,6 +2219,8 @@
+ =================
+ */
+ static void CL_Vid_Restart( refShutdownCode_t shutdownCode ) {
++
++	CL_SetLocalPlayer( 0 ); // PS5: split screen
+ 
+ 	// Settings may have changed so stop recording now
+ 	if ( CL_VideoRecording() )
+@@ -1827,6 +2264,8 @@
+ 		CL_InitCGame();
+ 		// send pure checksums
+ 		CL_SendPureChecksums();
++		// PS5: split screen
++		CL_InitSplitCGames();
+ 	}
+ 
+ 	cls.startCgame = qfalse;
+@@ -2303,10 +2742,10 @@
+ 
+ 	case CA_CHALLENGING:
+ 		// sending back the challenge
+-		port = Cvar_VariableIntegerValue( "net_qport" );
++		port = CL_QPort();
+ 
+ 		infoTruncated = qfalse;
+-		Q_strncpyz( info, Cvar_InfoString( CVAR_USERINFO, &infoTruncated ), sizeof( info ) );
++		Q_strncpyz( info, CL_PlayerUserinfo( &infoTruncated ), sizeof( info ) );
+ 
+ 		// remove some non-important keys that may cause overflow during connection
+ 		if ( strlen( info ) > MAX_USERINFO_LENGTH - 64 ) {
+@@ -2346,6 +2785,12 @@
+ 		len = Com_sprintf( data, sizeof( data ), "connect \"%s\"", info );
+ 		// NOTE TTimo don't forget to set the right data length!
+ 		NET_OutOfBandCompress( NS_CLIENT, &clc.serverAddress, (byte *) &data[0], len );
++		if ( cl_localPlayer ) {
++			// PS5: split screen, CL_CheckUserinfo watches the other players' own way
++			Q_strncpyz( cl_lp->userinfo, CL_PlayerUserinfo( &infoTruncated ), sizeof( cl_lp->userinfo ) );
++			break;
++		}
++
+ 		// the most current userinfo has been sent, so watch for any
+ 		// newer changes to userinfo variables
+ 		cvar_modifiedFlags &= ~CVAR_USERINFO;
+@@ -2753,7 +3198,7 @@
+ 			}
+ 		}
+ 
+-		Netchan_Setup( NS_CLIENT, &clc.netchan, from, Cvar_VariableIntegerValue( "net_qport" ), clc.challenge, clc.compat );
++		Netchan_Setup( NS_CLIENT, &clc.netchan, from, CL_QPort(), clc.challenge, clc.compat );
+ 
+ 		cls.state = CA_CONNECTED;
+ 		clc.lastPacketSentTime = cls.realtime - RETRANSMIT_TIMEOUT; // send first packet immediately
+@@ -2896,6 +3341,12 @@
+ 		&& cls.state >= CA_CONNECTED && cls.state != CA_CINEMATIC
+ 		&& cls.realtime - clc.lastPacketTime > cl_timeout->integer * 1000 ) {
+ 		if ( ++cl.timeoutcount > 5 ) { // timeoutcount saves debugger
++			if ( cl_localPlayer ) {
++				// PS5: split screen, another local player leaves alone
++				Com_Printf( "Player %i's connection timed out.\n", cl_localPlayer + 1 );
++				cl_lp->dropped = qtrue;
++				return;
++			}
+ 			Com_Printf( "\nServer connection timed out.\n" );
+ 			Cvar_Set( "com_errorMessage", "Server connection timed out." );
+ 			if ( !CL_Disconnect( qfalse ) ) { // restart client if not done already
+@@ -2959,6 +3410,17 @@
+ 	if ( CL_CheckPaused() )
+ 		return;
+ 
++	// PS5: split screen, another local player's when it differs from what they sent
++	if ( cl_localPlayer ) {
++		qboolean infoTruncated = qfalse;
++		const char *info = CL_PlayerUserinfo( &infoTruncated );
++		if ( strcmp( info, cl_lp->userinfo ) ) {
++			Q_strncpyz( cl_lp->userinfo, info, sizeof( cl_lp->userinfo ) );
++			CL_AddReliableCommand( va( "userinfo \"%s\"", info ), qfalse );
++		}
++		return;
++	}
++
+ 	// send a reliable userinfo update if needed
+ 	if ( cvar_modifiedFlags & CVAR_USERINFO )
+ 	{
+@@ -2983,6 +3445,7 @@
+ ==================
+ */
+ void CL_Frame( int msec, int realMsec ) {
++	int i;
+ 
+ #ifdef USE_CURL
+ 	if ( download.cURL ) {
+@@ -2994,6 +3457,10 @@
+ 		return;
+ 	}
+ 
++	// PS5: split screen, player 1 is the current player between frames (an error
++	// may have left another current)
++	CL_SetLocalPlayer( 0 );
++
+ 	// save the msec before checking pause
+ 	cls.realFrametime = realMsec;
+ 
+@@ -3094,27 +3561,51 @@
+ 		SCR_DebugGraph( msec * 0.25f );
+ 	}
+ 
+-	// see if we need to update any userinfo
+-	CL_CheckUserinfo();
++	// PS5: split screen, the other local players join or leave
++	CL_SplitSync();
+ 
+-	// if we haven't gotten a packet in a long time, drop the connection
+-	if ( !clc.demoplaying ) {
+-		CL_CheckTimeout();
+-	}
++	// PS5: each local player's connection and game, player 1's first
++	for ( i = 0; i < MAX_LOCAL_PLAYERS; i++ ) {
++		if ( i > 0 && cl_localPlayers[ i ].state <= CA_DISCONNECTED ) {
++			continue;
++		}
++		CL_SetLocalPlayer( i );
+ 
+-	// send intentions now
+-	CL_SendCmd();
++		// see if we need to update any userinfo
++		CL_CheckUserinfo();
+ 
+-	// resend a connection request if necessary
+-	CL_CheckForResend();
++		// if we haven't gotten a packet in a long time, drop the connection
++		if ( !clc.demoplaying ) {
++			CL_CheckTimeout();
++		}
+ 
+-	// decide on the serverTime to render
+-	CL_SetCGameTime();
++		// send intentions now
++		CL_SendCmd();
++
++		// resend a connection request if necessary
++		CL_CheckForResend();
++
++		// load the map once player 1 has
++		if ( i > 0 ) {
++			CL_SplitLoad();
++		}
++
++		// decide on the serverTime to render
++		CL_SetCGameTime();
++	}
++	CL_SetLocalPlayer( 0 );
+ 
+ 	// update the screen
+ 	cls.framecount++;
+ 	SCR_UpdateScreen();
+ 
++	// PS5: split screen, the players the server let go leave
++	for ( i = 1; i < MAX_LOCAL_PLAYERS; i++ ) {
++		if ( cl_localPlayers[ i ].dropped && cl_localPlayers[ i ].state > CA_DISCONNECTED ) {
++			CL_SplitLeave( i );
++		}
++	}
++
+ 	// update audio
+ 	S_Update( realMsec );
+ 
+@@ -3888,10 +4379,17 @@
+ void CL_Init( void ) {
+ 	const char *s;
+ 	cvar_t *cv;
++	int i;
+ 
+ 	Com_Printf( "----- Client Initialization -----\n" );
+ 
+ 	Con_Init();
++
++	// PS5: split screen, player 1 is current and the others have left
++	CL_SetLocalPlayer( 0 );
++	for ( i = 1; i < MAX_LOCAL_PLAYERS; i++ ) {
++		cl_localPlayers[ i ].state = CA_DISCONNECTED;
++	}
+ 
+ 	CL_ClearState();
+ 	cls.state = CA_DISCONNECTED;	// no longer CA_UNINITIALIZED
+@@ -4008,6 +4506,19 @@
+ 
+ 	cl_reconnectArgs = Cvar_Get( "cl_reconnectArgs", "", CVAR_ARCHIVE_ND | CVAR_NOTABCOMPLETE );
+ 
++	// PS5: split screen
++	cl_splitPlayers = Cvar_Get( "cl_splitPlayers", "1", CVAR_TEMP );
++	Cvar_CheckRange( cl_splitPlayers, "1", XSTRING( MAX_LOCAL_PLAYERS ), CV_INTEGER );
++	Cvar_SetDescription( cl_splitPlayers, "PS5: the players who play on the local server's next map, each in a part of the screen (split screen). The menus set it." );
++	for ( i = 2; i <= MAX_LOCAL_PLAYERS; i++ ) {
++		cv = Cvar_Get( va( "cl_splitName%i", i ), "", CVAR_TEMP );
++		Cvar_SetDescription( cv, va( "PS5: player %i's name in split screen (empty: \"Player %i\").", i, i ) );
++		cv = Cvar_Get( va( "cl_splitModel%i", i ), "", CVAR_ARCHIVE_ND );
++		Cvar_SetDescription( cv, va( "PS5: player %i's model in split screen (empty: one player 1 and the others don't wear).", i ) );
++		cv = Cvar_Get( va( "cl_splitTeam%i", i ), "", CVAR_TEMP );
++		Cvar_SetDescription( cv, va( "PS5: the team player %i joins in a team game in split screen (red or blue; the menus set it).", i ) );
++	}
++
+ 	// userinfo
+ 	Cvar_Get ("name", "UnnamedPlayer", CVAR_USERINFO | CVAR_ARCHIVE_ND );
+ 	Cvar_Get ("rate", "25000", CVAR_USERINFO | CVAR_ARCHIVE );
+@@ -4067,6 +4578,7 @@
+ 	Cmd_AddCommand ("stopvideo", CL_StopVideo_f );
+ 	Cmd_AddCommand ("serverinfo", CL_Serverinfo_f );
+ 	Cmd_AddCommand ("systeminfo", CL_Systeminfo_f );
++	Cmd_AddCommand ("player", CL_Player_f ); // PS5: split screen
+ 
+ #ifdef USE_CURL
+ 	Cmd_AddCommand( "download", CL_Download_f );
+@@ -4120,6 +4632,7 @@
+ 	Con_Shutdown();
+ 
+ 	Cmd_RemoveCommand ("cmd");
++	Cmd_RemoveCommand ("player");
+ 	Cmd_RemoveCommand ("configstrings");
+ 	Cmd_RemoveCommand ("userinfo");
+ 	Cmd_RemoveCommand ("clientinfo");
+--- a/code/client/cl_parse.c
++++ b/code/client/cl_parse.c
+@@ -353,7 +353,8 @@
+ 	cl.serverId = atoi( Info_ValueForKey( systemInfo, "sv_serverid" ) );
+ 
+ 	// don't set any vars when playing a demo
+-	if ( clc.demoplaying ) {
++	// (PS5: nor for the local players after the first, split screen: player 1 did)
++	if ( clc.demoplaying || cl_localPlayer ) {
+ 		return;
+ 	}
+ 
+@@ -585,6 +586,15 @@
+ 	// read the checksum feed
+ 	clc.checksumFeed = MSG_ReadLong( msg );
+ 
++	if ( cl_localPlayer ) {
++		// PS5: split screen. Another local player: the server and its files are player
++		// 1's, and they load the map once player 1 has (CL_SplitLoad).
++		CL_ParseServerInfo();
++		CL_SystemInfoChanged( qtrue );
++		cl_lp->loadPending = qtrue;
++		return;
++	}
++
+ 	// save old gamedir
+ 	Cvar_VariableStringBuffer( "fs_game", oldGame, sizeof( oldGame ) );
+ 
+@@ -812,6 +822,11 @@
+ 	if ( ( !cgvm && cls.state == CA_CONNECTED && clc.download != FS_INVALID_HANDLE ) || ( cgvm && cls.state == CA_PRIMED ) ) {
+ 		const char *text;
+ 		Cmd_TokenizeString( s );
++		if ( !Q_stricmp( Cmd_Argv(0), "disconnect" ) && cl_localPlayer ) {
++			// PS5: split screen, another local player leaves alone
++			cl_lp->dropped = qtrue;
++			return;
++		}
+ 		if ( !Q_stricmp( Cmd_Argv(0), "disconnect" ) ) {
+ 			text = ( Cmd_Argc() > 1 ) ? va( "Server disconnected: %s", Cmd_Argv( 1 ) ) : "Server disconnected.";
+ 			Cvar_Set( "com_errorMessage", text );
+--- a/code/client/cl_scrn.c
++++ b/code/client/cl_scrn.c
+@@ -511,9 +511,94 @@
+ 
+ 
+ //=======================================================
++
++/*
++==================
++SCR_DrawCenteredText
++
++PS5: split screen. A line of text centred on x, in pixels, size pixels a letter.
++==================
++*/
++static void SCR_DrawCenteredText( int x, int y, int size, const char *text, const float *color ) {
++	const int length = strlen( text );
++	float row, col;
++	int i, ch;
++
++	x -= length * size / 2;
++	re.SetColor( color );
++	for ( i = 0; i < length; i++, x += size ) {
++		ch = text[i] & 255;
++		if ( ch == ' ' ) {
++			continue;
++		}
++		row = ( ch >> 4 ) * 0.0625f;
++		col = ( ch & 15 ) * 0.0625f;
++		re.DrawStretchPic( x, y, size, size, col, row, col + 0.0625f, row + 0.0625f, cls.charSetShader );
++	}
++	re.SetColor( NULL );
++}
+ 
++
+ /*
+ ==================
++SCR_DrawPlayerJoining
++
++PS5: split screen. The current player's part of the screen while they join.
++==================
++*/
++static void SCR_DrawPlayerJoining( void ) {
++	static const vec4_t grey = { 0.6f, 0.6f, 0.6f, 1.0f };
++	int x, y, width, height, size;
++
++	CL_PlayerView( cl_localPlayer, &x, &y, &width, &height );
++	size = height / 16;
++	SCR_DrawCenteredText( x + width / 2, y + height / 2 - size, size, va( "PLAYER %i", cl_localPlayer + 1 ), g_color_table[ ColorIndex( COLOR_WHITE ) ] );
++	size /= 3;
++	SCR_DrawCenteredText( x + width / 2, y + height / 2 + size, size, clc.serverMessage[0] ? clc.serverMessage : "Joining...", grey );
++}
++
++
++/*
++==================
++SCR_DrawPlayerViews
++
++PS5: split screen. Each local player's part of the screen, on black: the gaps
++between the parts are lines.
++==================
++*/
++static void SCR_DrawPlayerViews( stereoFrame_t stereoFrame ) {
++	const int views = CL_SplitViews();
++	int player;
++
++	re.SetColor( g_color_table[ ColorIndex( COLOR_BLACK ) ] );
++	re.DrawStretchPic( 0, 0, cls.glconfig.vidWidth, cls.glconfig.vidHeight, 0, 0, 0, 0, cls.whiteShader );
++	re.SetColor( NULL );
++
++	for ( player = 0; player < views; player++ ) {
++		CL_SetLocalPlayer( player );
++		switch ( cls.state ) {
++		case CA_LOADING:
++		case CA_PRIMED:
++		case CA_ACTIVE:
++			// the game information screen and loading progress, or the game
++			if ( cgvm ) {
++				CL_CGameRendering( stereoFrame );
++				break;
++			}
++			// fall through
++		default:
++			SCR_DrawPlayerJoining();
++			break;
++		}
++	}
++	CL_SetLocalPlayer( 0 );
++
++	SCR_DrawDemoRecording();
++}
++
++
++/*
++==================
+ SCR_DrawScreenField
+ 
+ This will be called twice if rendering in stereo mode
+@@ -521,6 +606,7 @@
+ */
+ static void SCR_DrawScreenField( stereoFrame_t stereoFrame ) {
+ 	qboolean uiFullscreen;
++	const int previous = CL_SetLocalPlayer( 0 ); // PS5: split screen, the screen is player 1's
+ 
+ 	re.BeginFrame( stereoFrame );
+ 
+@@ -541,7 +627,10 @@
+ 
+ 	// if the menu is going to cover the entire screen, we
+ 	// don't need to render anything under it
+-	if ( uivm && !uiFullscreen ) {
++	if ( uivm && !uiFullscreen && CL_SplitViews() > 1 && cls.state >= CA_LOADING ) {
++		// PS5: split screen, once player 1 has started loading
++		SCR_DrawPlayerViews( stereoFrame );
++	} else if ( uivm && !uiFullscreen ) {
+ 		switch( cls.state ) {
+ 		default:
+ 			Com_Error( ERR_FATAL, "SCR_DrawScreenField: bad cls.state" );
+@@ -597,6 +686,8 @@
+ 	if ( cl_debuggraph->integer || cl_timegraph->integer || cl_debugMove->integer ) {
+ 		SCR_DrawDebugGraph ();
+ 	}
++
++	CL_SetLocalPlayer( previous );
+ }
+ 
+ 
+--- a/code/client/client.h
++++ b/code/client/client.h
+@@ -144,8 +144,6 @@
+ 	byte			baselineUsed[MAX_GENTITIES];
+ } clientActive_t;
+ 
+-extern	clientActive_t		cl;
+-
+ #define EM_GAMESTATE 1
+ #define EM_SNAPSHOT  2
+ #define EM_COMMAND   4
+@@ -254,8 +252,6 @@
+ 
+ } clientConnection_t;
+ 
+-extern	clientConnection_t clc;
+-
+ /*
+ ==================================================================
+ 
+@@ -363,7 +359,46 @@
+ 
+ extern	char		cl_oldGame[MAX_QPATH];
+ extern	qboolean	cl_oldGameSet;
++
++/*
++==================================================================
++
++PS5: split screen. Each local player has a client of their own: what was the
++one client's (cl, clc, the cgame, the connection's state and the buttons) is a
++local player's. CL_SetLocalPlayer makes one the current player, whose cl, clc
++and cgvm the client's code works with (cls.state is theirs too, swapped in).
++Player 1 (0) is the client as it always was. The others connect to the local
++server beside player 1, on loopback channels of their own, when a local map
++starts with cl_splitPlayers above 1, and each has a part of the screen.
++
++==================================================================
++*/
++
++typedef struct {
++	clientActive_t		active;			// cl
++	clientConnection_t	connection;		// clc
++	vm_t				*cgame;			// cgvm: interface to cgame dll or vm
++	connstate_t			state;			// cls.state, while another player is the current one
++	qboolean			loadPending;	// the gamestate came, to load once player 1 has
++	qboolean			teamSent;		// cl_splitTeam<n> went to the server
++	qboolean			dropped;		// the server let this player go: out until the next map
++	char				userinfo[MAX_INFO_STRING];	// as last sent (players 2 and on)
++} localPlayer_t;
+ 
++extern	localPlayer_t	cl_localPlayers[MAX_LOCAL_PLAYERS];
++extern	localPlayer_t	*cl_lp;			// the current player's
++extern	int				cl_localPlayer;	// the current player: 0 is player 1
++
++#define	cl		(cl_lp->active)
++#define	clc		(cl_lp->connection)
++#define	cgvm	(cl_lp->cgame)
++
++int		CL_SetLocalPlayer( int player );	// returns the player that was current
++connstate_t CL_PlayerState( int player );
++int		CL_SplitViews( void );				// the parts of the screen: 1 without split screen
++void	CL_PlayerView( int player, int *x, int *y, int *width, int *height );
++qboolean CL_PlayerPlaying( int player );	// in a part of the screen, and in the game
++
+ #ifdef USE_CURL
+ 
+ extern		download_t	download;
+@@ -378,7 +413,6 @@
+ 
+ //=============================================================================
+ 
+-extern	vm_t			*cgvm;	// interface to cgame dll or vm
+ extern	vm_t			*uivm;	// interface to ui dll or vm
+ extern	refexport_t		re;		// interface to refresh .dll
+ 
+--- a/code/client/snd_dma.c
++++ b/code/client/snd_dma.c
+@@ -70,6 +70,37 @@
+ static int			listener_number;
+ static vec3_t		listener_origin;
+ static vec3_t		listener_axis[3];
++
++// PS5: split screen. The other local players' ears, as their cgames placed them
++// (S_Base_Respatialize); player 1's are listener_*. A sound is heard from the
++// nearest player, and at full volume from any player's own entity.
++static struct {
++	int			number;
++	vec3_t		origin;
++	vec3_t		axis[3];
++	int			framecount;		// cls.framecount as they were placed
++} s_listeners[ MAX_LOCAL_PLAYERS ];
++
++
++// a player after the first whose cgame placed their ears this frame or the last
++static qboolean S_ListenerActive( int player ) {
++	return player < CL_SplitViews() && (unsigned)( cls.framecount - s_listeners[ player ].framecount ) <= 1;
++}
++
++
++static qboolean S_IsListener( int entityNum ) {
++	int i;
++
++	if ( entityNum == listener_number ) {
++		return qtrue;
++	}
++	for ( i = 1; i < MAX_LOCAL_PLAYERS; i++ ) {
++		if ( s_listeners[ i ].number == entityNum && S_ListenerActive( i ) ) {
++			return qtrue;
++		}
++	}
++	return qfalse;
++}
+ 
+ int			s_soundtime;		// sample PAIRS
+ int   		s_paintedtime; 		// sample PAIRS
+@@ -397,11 +428,25 @@
+ 	vec_t	lscale, rscale, scale;
+ 	vec3_t	source_vec;
+ 	vec3_t	vec;
++	const vec_t *head = listener_origin;
++	vec3_t	*axis = listener_axis;
++	float	nearest;
++	int		i;
+ 
+ 	const float dist_mult = SOUND_ATTENUATE;
++
++	// PS5: split screen, the nearest local player hears it
++	nearest = DistanceSquared( origin, listener_origin );
++	for ( i = 1; i < MAX_LOCAL_PLAYERS; i++ ) {
++		if ( S_ListenerActive( i ) && DistanceSquared( origin, s_listeners[ i ].origin ) < nearest ) {
++			nearest = DistanceSquared( origin, s_listeners[ i ].origin );
++			head = s_listeners[ i ].origin;
++			axis = s_listeners[ i ].axis;
++		}
++	}
+ 	
+ 	// calculate stereo separation and distance attenuation
+-	VectorSubtract(origin, listener_origin, source_vec);
++	VectorSubtract(origin, head, source_vec);
+ 
+ 	dist = VectorNormalize(source_vec);
+ 	dist -= SOUND_FULLVOLUME;
+@@ -409,7 +454,7 @@
+ 		dist = 0.0f;		// close enough to be at full volume
+ 	dist *= dist_mult;		// different attenuation levels
+ 	
+-	VectorRotate( source_vec, listener_axis, vec );
++	VectorRotate( source_vec, axis, vec );
+ 
+ 	dot = -vec[1];
+ 
+@@ -456,7 +501,7 @@
+ Entchannel 0 will never override a playing sound
+ ====================
+ */
+-static void S_Base_StartSound( const vec3_t origin, int entityNum, int entchannel, sfxHandle_t sfxHandle ) {
++static void S_StartSoundFor( const vec3_t origin, int entityNum, int entchannel, sfxHandle_t sfxHandle, qboolean local ) {
+ 	channel_t	*ch;
+ 	sfx_t		*sfx;
+ 	int i, oldest, chosen, startTime;
+@@ -506,6 +551,27 @@
+ 			sfx->lastTimeUsed = startTime;
+ 			//Com_Printf( S_COLOR_YELLOW "double sound start: %d %s\n", entityNum, sfx->soundName);
+ 			return;
++		}
++	}
++
++	// PS5: split screen. Each local player's cgame starts the sounds of what it
++	// sees, and picks its own of a sound's variants (footsteps, machinegun fire,
++	// ricochets): what another one started within a twelfth of a second is the
++	// same sound if it was on the same entity's same channel, or for the automatic
++	// channel the same sound, or in the same place; as a local sound (the
++	// announcer's), the same sound.
++	if ( CL_SplitViews() > 1 ) {
++		ch = s_channels;
++		for ( i = 0; i < MAX_CHANNELS; i++, ch++ ) {
++			if ( !ch->thesfx || ch->localPlayer == cl_localPlayer || (unsigned)( startTime - ch->allocTime ) >= dma.speed / 12 ) {
++				continue;
++			}
++			if ( local ? ( ch->local && ch->thesfx == sfx )
++				: ( !ch->local && ch->entnum == entityNum && ( entchannel != CHAN_AUTO ? ch->entchannel == entchannel
++					: origin && ch->fixed_origin ? DistanceSquared( origin, ch->origin ) < 32.0f * 32.0f
++					: ch->thesfx == sfx ) ) ) {
++				return;
++			}
+ 		}
+ 	}
+ 
+@@ -513,7 +579,7 @@
+ 	// pick a channel to play on
+ 
+ 	// try to limit sound duplication
+-	if ( entityNum == listener_number )
++	if ( S_IsListener( entityNum ) )
+ 		allowed = 16;
+ 	else
+ 		allowed = 8;
+@@ -545,7 +611,7 @@
+ 		oldest = sfx->lastTimeUsed;
+ 		chosen = -1;
+ 		for ( i = 0 ; i < MAX_CHANNELS ; i++, ch++ ) {
+-			if (ch->entnum != listener_number && ch->entnum == entityNum && ch->allocTime - oldest < 0 && ch->entchannel != CHAN_ANNOUNCER) {
++			if (!S_IsListener(ch->entnum) && ch->entnum == entityNum && ch->allocTime - oldest < 0 && ch->entchannel != CHAN_ANNOUNCER) {
+ 				oldest = ch->allocTime;
+ 				chosen = i;
+ 			}
+@@ -553,14 +619,14 @@
+ 		if (chosen == -1) {
+ 			ch = s_channels;
+ 			for ( i = 0 ; i < MAX_CHANNELS ; i++, ch++ ) {
+-				if (ch->entnum != listener_number && ch->allocTime - oldest < 0 && ch->entchannel != CHAN_ANNOUNCER) {
++				if (!S_IsListener(ch->entnum) && ch->allocTime - oldest < 0 && ch->entchannel != CHAN_ANNOUNCER) {
+ 					oldest = ch->allocTime;
+ 					chosen = i;
+ 				}
+ 			}
+ 			if (chosen == -1) {
+ 				ch = s_channels;
+-				if (ch->entnum == listener_number) {
++				if (S_IsListener(ch->entnum)) {
+ 					for ( i = 0 ; i < MAX_CHANNELS ; i++, ch++ ) {
+ 						if ( ch->allocTime - oldest < 0 ) {
+ 							oldest = ch->allocTime;
+@@ -594,9 +660,16 @@
+ 	ch->leftvol = ch->master_vol;		// these will get calced at next spatialize
+ 	ch->rightvol = ch->master_vol;		// unless the game isn't running
+ 	ch->doppler = qfalse;
++	ch->localPlayer = cl_localPlayer;
++	ch->local = local;
+ }
+ 
+ 
++static void S_Base_StartSound( const vec3_t origin, int entityNum, int entchannel, sfxHandle_t sfxHandle ) {
++	S_StartSoundFor( origin, entityNum, entchannel, sfxHandle, qfalse );
++}
++
++
+ /*
+ ==================
+ S_StartLocalSound
+@@ -612,7 +685,8 @@
+ 		return;
+ 	}
+ 
+-	S_Base_StartSound (NULL, listener_number, channelNum, sfxHandle );
++	// PS5: split screen, on the entity of the player whose cgame starts it
++	S_StartSoundFor( NULL, cl_localPlayer ? s_listeners[ cl_localPlayer ].number : listener_number, channelNum, sfxHandle, qtrue );
+ }
+ 
+ 
+@@ -1042,11 +1116,21 @@
+ 		Com_Error( ERR_DROP, "S_Respatialize: bad entitynum %i", entityNum );
+ 	}
+ 
+-	listener_number = entityNum;
+-	VectorCopy(head, listener_origin);
+-	VectorCopy(axis[0], listener_axis[0]);
+-	VectorCopy(axis[1], listener_axis[1]);
+-	VectorCopy(axis[2], listener_axis[2]);
++	if ( cl_localPlayer ) {
++		// PS5: split screen, another local player's ears
++		s_listeners[ cl_localPlayer ].number = entityNum;
++		s_listeners[ cl_localPlayer ].framecount = cls.framecount;
++		VectorCopy( head, s_listeners[ cl_localPlayer ].origin );
++		VectorCopy( axis[0], s_listeners[ cl_localPlayer ].axis[0] );
++		VectorCopy( axis[1], s_listeners[ cl_localPlayer ].axis[1] );
++		VectorCopy( axis[2], s_listeners[ cl_localPlayer ].axis[2] );
++	} else {
++		listener_number = entityNum;
++		VectorCopy(head, listener_origin);
++		VectorCopy(axis[0], listener_axis[0]);
++		VectorCopy(axis[1], listener_axis[1]);
++		VectorCopy(axis[2], listener_axis[2]);
++	}
+ 
+ 	// update spatialization for dynamic sounds	
+ 	ch = s_channels;
+@@ -1055,7 +1139,7 @@
+ 			continue;
+ 		}
+ 		// anything coming from the view entity will always be full volume
+-		if (ch->entnum == listener_number) {
++		if (S_IsListener(ch->entnum)) {
+ 			ch->leftvol = ch->master_vol;
+ 			ch->rightvol = ch->master_vol;
+ 		} else {
+--- a/code/client/snd_local.h
++++ b/code/client/snd_local.h
+@@ -108,6 +108,8 @@
+ 	qboolean	fixed_origin;	// use origin instead of fetching entnum's origin
+ 	sfx_t		*thesfx;		// sfx structure
+ 	qboolean	doppler;
++	int			localPlayer;	// PS5: split screen, whose cgame started it
++	qboolean	local;			// PS5: S_StartLocalSound's
+ } channel_t;
+ 
+ 
+--- a/code/qcommon/common.c
++++ b/code/qcommon/common.c
+@@ -2715,14 +2715,14 @@
+ 
+ /*
+ ================
+-Sys_QueEvent
++Com_QueEvent
+ 
+ A time of 0 will get the current time
+ Ptr should either be null, or point to a block of data that can
+ be freed by the game later.
+ ================
+ */
+-void Sys_QueEvent( int evTime, sysEventType_t evType, int value, int value2, int ptrLength, void *ptr ) {
++static void Com_QueEvent( int player, int evTime, sysEventType_t evType, int value, int value2, int ptrLength, void *ptr ) {
+ 	sysEvent_t	*ev;
+ 
+ #if 0
+@@ -2735,7 +2735,7 @@
+ 	}
+ 
+ 	// try to combine all sequential mouse moves in one event
+-	if ( evType == SE_MOUSE && lastEvent->evType == SE_MOUSE && eventHead != eventTail ) {
++	if ( evType == SE_MOUSE && lastEvent->evType == SE_MOUSE && lastEvent->evPlayer == player && eventHead != eventTail ) {
+ 		lastEvent->evValue += value;
+ 		lastEvent->evValue2 += value2;
+ 		lastEvent->evTime = evTime;
+@@ -2761,8 +2761,30 @@
+ 	ev->evValue2 = value2;
+ 	ev->evPtrLength = ptrLength;
+ 	ev->evPtr = ptr;
++	ev->evPlayer = player;
+ 
+ 	lastEvent = ev;
++}
++
++
++void Sys_QueEvent( int evTime, sysEventType_t evType, int value, int value2, int ptrLength, void *ptr ) {
++	Com_QueEvent( 0, evTime, evType, value, value2, ptrLength, ptr );
++}
++
++
++/*
++================
++Sys_QuePlayerEvent
++
++PS5: split screen. A key, mouse or joystick event from another local player's
++controller (player 1 is 0, Sys_QueEvent's).
++================
++*/
++void Sys_QuePlayerEvent( int player, int evTime, sysEventType_t evType, int value, int value2 ) {
++	if ( (unsigned)player >= MAX_LOCAL_PLAYERS ) {
++		return;
++	}
++	Com_QueEvent( player, evTime, evType, value, value2, 0, NULL );
+ }
+ 
+ 
+@@ -2972,13 +2994,19 @@
+ 			// manually send packet events for the loopback channel
+ #ifndef DEDICATED
+ 			netadr_t evFrom;
+-			while ( NET_GetLoopPacket( NS_CLIENT, &evFrom, &buf ) ) {
+-				CL_PacketEvent( &evFrom, &buf );
++			int channel;
++			// PS5: a loopback channel for each local player (split screen)
++			for ( channel = 0; channel < MAX_LOCAL_PLAYERS; channel++ ) {
++				while ( NET_GetLoopPacket( NS_CLIENT, channel, &evFrom, &buf ) ) {
++					CL_PlayerPacketEvent( channel, &evFrom, &buf );
++				}
+ 			}
+-			while ( NET_GetLoopPacket( NS_SERVER, &evFrom, &buf ) ) {
+-				// if the server just shut down, flush the events
+-				if ( com_sv_running->integer ) {
+-					Com_RunAndTimeServerPacket( &evFrom, &buf );
++			for ( channel = 0; channel < MAX_LOCAL_PLAYERS; channel++ ) {
++				while ( NET_GetLoopPacket( NS_SERVER, channel, &evFrom, &buf ) ) {
++					// if the server just shut down, flush the events
++					if ( com_sv_running->integer ) {
++						Com_RunAndTimeServerPacket( &evFrom, &buf );
++					}
+ 				}
+ 			}
+ #endif // !DEDICATED
+@@ -2988,16 +3016,25 @@
+ 		switch ( ev.evType ) {
+ #ifndef DEDICATED
+ 		case SE_KEY:
+-			CL_KeyEvent( ev.evValue, ev.evValue2, ev.evTime );
++			if ( ev.evPlayer )
++				CL_PlayerKeyEvent( ev.evPlayer, ev.evValue, ev.evValue2, ev.evTime );
++			else
++				CL_KeyEvent( ev.evValue, ev.evValue2, ev.evTime );
+ 			break;
+ 		case SE_CHAR:
+ 			CL_CharEvent( ev.evValue );
+ 			break;
+ 		case SE_MOUSE:
+-			CL_MouseEvent( ev.evValue, ev.evValue2 /*, ev.evTime*/ );
++			if ( ev.evPlayer )
++				CL_PlayerMouseEvent( ev.evPlayer, ev.evValue, ev.evValue2 );
++			else
++				CL_MouseEvent( ev.evValue, ev.evValue2 /*, ev.evTime*/ );
+ 			break;
+ 		case SE_JOYSTICK_AXIS:
+-			CL_JoystickEvent( ev.evValue, ev.evValue2, ev.evTime );
++			if ( ev.evPlayer )
++				CL_PlayerJoystickEvent( ev.evPlayer, ev.evValue, ev.evValue2, ev.evTime );
++			else
++				CL_JoystickEvent( ev.evValue, ev.evValue2, ev.evTime );
+ 			break;
+ #endif // !DEDICATED
+ 		case SE_CONSOLE:
+--- a/code/qcommon/net_chan.c
++++ b/code/qcommon/net_chan.c
+@@ -119,7 +119,7 @@
+ 
+ 	// send the qport if we are a client
+ 	if ( chan->sock == NS_CLIENT ) {
+-		MSG_WriteShort( &send, qport->integer );
++		MSG_WriteShort( &send, chan->qport ); // PS5: the channel's (each local player has one: split screen)
+ 	}
+ 
+ 	if ( !chan->compat )
+@@ -182,7 +182,7 @@
+ 
+ 		// send the qport if we are a client
+ 		if ( chan->sock == NS_CLIENT ) {
+-			MSG_WriteShort( &send, qport->integer );
++			MSG_WriteShort( &send, chan->qport ); // PS5: the channel's (each local player has one: split screen)
+ 		}
+ 
+ 		if ( !chan->compat ) {
+@@ -253,7 +253,7 @@
+ 
+ 	// send the qport if we are a client
+ 	if ( chan->sock == NS_CLIENT )
+-		MSG_WriteShort( &send, qport->integer );
++		MSG_WriteShort( &send, chan->qport ); // PS5: the channel's (each local player has one: split screen)
+ 
+ 	if ( !chan->compat )
+ 		MSG_WriteLong(&send, NETCHAN_GENCHECKSUM(chan->challenge, chan->outgoingSequence));
+@@ -308,7 +308,7 @@
+ 
+ 	// send the qport if we are a client
+ 	if ( chan->sock == NS_CLIENT )
+-		MSG_WriteShort( &send, qport->integer );
++		MSG_WriteShort( &send, chan->qport ); // PS5: the channel's (each local player has one: split screen)
+ 
+ 	if ( !chan->compat )
+ 		MSG_WriteLong( &send, NETCHAN_GENCHECKSUM( chan->challenge, chan->outgoingSequence ) );
+@@ -524,15 +524,16 @@
+ 	int			get, send;
+ } loopback_t;
+ 
+-static loopback_t loopbacks[2]; // NS_CLIENT, NS_SERVER
++// PS5: a pair for each local player (split screen, NET_LoopChannel)
++static loopback_t loopbacks[MAX_LOCAL_PLAYERS][2]; // NS_CLIENT, NS_SERVER
+ 
+ 
+-qboolean NET_GetLoopPacket( netsrc_t sock, netadr_t *net_from, msg_t *net_message )
++qboolean NET_GetLoopPacket( netsrc_t sock, int channel, netadr_t *net_from, msg_t *net_message )
+ {
+ 	int		i;
+ 	loopback_t	*loop;
+ 
+-	loop = &loopbacks[sock];
++	loop = &loopbacks[channel][sock];
+ 
+ 	if ( loop->send - loop->get > MAX_LOOPBACK )
+ 		loop->get = loop->send - MAX_LOOPBACK;
+@@ -547,16 +548,17 @@
+ 	net_message->cursize = loop->msgs[i].datalen;
+ 	Com_Memset (net_from, 0, sizeof(*net_from));
+ 	net_from->type = NA_LOOPBACK;
++	net_from->port = channel;
+ 	return qtrue;
+ }
+ 
+ 
+-static void NET_SendLoopPacket( netsrc_t sock, int length, const void *data )
++static void NET_SendLoopPacket( netsrc_t sock, int length, const void *data, const netadr_t *to )
+ {
+ 	int		i;
+ 	loopback_t	*loop;
+ 
+-	loop = &loopbacks[sock^1];
++	loop = &loopbacks[NET_LoopChannel( to )][sock^1];
+ 
+ 	i = loop->send & (MAX_LOOPBACK-1);
+ 	loop->send++;
+@@ -626,7 +628,7 @@
+ 			packetQueue_t *next = item->next;
+ #ifndef DEDICATED
+ 			if ( item->to.type == NA_LOOPBACK )
+-				NET_SendLoopPacket( item->sock, item->length, item->data );
++				NET_SendLoopPacket( item->sock, item->length, item->data, &item->to );
+ 			else
+ #endif
+ 				Sys_SendPacket( item->length, item->data, &item->to );
+@@ -702,7 +704,7 @@
+ 	}
+ #ifndef DEDICATED
+ 	else if ( to->type == NA_LOOPBACK ) {
+-		NET_SendLoopPacket( sock, length, data );
++		NET_SendLoopPacket( sock, length, data, to );
+ 	}
+ #endif
+ 	else {
+--- a/code/qcommon/net_ip.c
++++ b/code/qcommon/net_ip.c
+@@ -623,6 +623,9 @@
+ 		if (a->port == b->port)
+ 			return qtrue;
+ 	}
++	// PS5: each local player has a loopback channel of their own (split screen)
++	else if ( a->type == NA_LOOPBACK )
++		return NET_LoopChannel( a ) == NET_LoopChannel( b );
+ 	else
+ 		return qtrue;
+ 		
+@@ -633,6 +636,23 @@
+ qboolean NET_IsLocalAddress( const netadr_t *adr ) 
+ {
+ 	return adr->type == NA_LOOPBACK;
++}
++
++
++/*
++===================
++NET_LoopChannel
++
++PS5: split screen. A loopback address's port is its channel, the local player
++it is to or from (0 is player 1, and so is a port out of range, which the
++loopback ignores); -1 for any other address.
++===================
++*/
++int NET_LoopChannel( const netadr_t *adr )
++{
++	if ( adr->type != NA_LOOPBACK )
++		return -1;
++	return adr->port < MAX_LOCAL_PLAYERS ? adr->port : 0;
+ }
+ 
+ //=============================================================================
+--- a/code/qcommon/qcommon.h
++++ b/code/qcommon/qcommon.h
+@@ -156,6 +156,11 @@
+ #define	PORT_ANY			-1
+ 
+ #define	MAX_RELIABLE_COMMANDS	64			// max string commands buffered for restransmit
++
++// PS5: split screen. The most players one client plays locally, each with a part of
++// the screen, a connection to the local server of their own (a loopback channel: the
++// loopback address's port is its number) and a cgame of their own. Player 1 is 0.
++#define	MAX_LOCAL_PLAYERS		4
+ 
+ typedef enum {
+ 	NA_BAD = 0,					// an address lookup failed
+@@ -209,11 +214,12 @@
+ qboolean	NET_CompareBaseAdrMask( const netadr_t *a, const netadr_t *b, unsigned int netmask );
+ qboolean	NET_CompareBaseAdr( const netadr_t *a, const netadr_t *b );
+ qboolean	NET_IsLocalAddress( const netadr_t *adr );
++int			NET_LoopChannel( const netadr_t *adr );
+ const char	*NET_AdrToString( const netadr_t *a );
+ const char	*NET_AdrToStringwPort( const netadr_t *a );
+ int         NET_StringToAdr( const char *s, netadr_t *a, netadrtype_t family );
+ #ifndef DEDICATED
+-qboolean	NET_GetLoopPacket( netsrc_t sock, netadr_t *net_from, msg_t *net_message );
++qboolean	NET_GetLoopPacket( netsrc_t sock, int channel, netadr_t *net_from, msg_t *net_message );
+ #endif
+ #ifdef USE_IPV6
+ void		NET_JoinMulticast6( void );
+@@ -390,6 +396,8 @@
+ #ifndef USE_DEDICATED
+ 	VM_CGAME,
+ 	VM_UI,
++	VM_CGAME_SPLIT,	// PS5: the other local players' cgames, player 2's first
++	VM_CGAME_SPLIT_LAST = VM_CGAME_SPLIT + MAX_LOCAL_PLAYERS - 2,
+ #endif
+ 	VM_COUNT
+ } vmIndex_t;
+@@ -1189,6 +1197,13 @@
+ 
+ void CL_PacketEvent( const netadr_t *from, msg_t *msg );
+ 
++// PS5: split screen. Another local player's input (player 1 is 0, CL_KeyEvent's
++// and the others'), and a packet on a local player's loopback channel.
++void CL_PlayerKeyEvent( int player, int key, qboolean down, unsigned time );
++void CL_PlayerMouseEvent( int player, int dx, int dy );
++void CL_PlayerJoystickEvent( int player, int axis, int value, int time );
++void CL_PlayerPacketEvent( int player, const netadr_t *from, msg_t *msg );
++
+ void CL_ConsolePrint( const char *text );
+ 
+ qboolean CL_MapLoading( void );
+@@ -1292,10 +1307,12 @@
+ 	int				evValue, evValue2;
+ 	int				evPtrLength;	// bytes of data pointed to by evPtr, for journaling
+ 	void			*evPtr;			// this must be manually freed if not NULL
++	int				evPlayer;		// PS5: the local player a key, mouse or joystick event is from (0: player 1)
+ } sysEvent_t;
+ 
+ void	Sys_Init( void );
+ void	Sys_QueEvent( int evTime, sysEventType_t evType, int value, int value2, int ptrLength, void *ptr );
++void	Sys_QuePlayerEvent( int player, int evTime, sysEventType_t evType, int value, int value2 );
+ void	Sys_SendKeyEvents( void );
+ void	Sys_Sleep( int msec );
+ char	*Sys_ConsoleInput( void );
+--- a/code/qcommon/vm.c
++++ b/code/qcommon/vm.c
+@@ -217,7 +217,9 @@
+ static const char *vmName[ VM_COUNT ] = {
+ 	"qagame",
+ 	"cgame",
+-	"ui"
++	"ui",
++	// PS5: the other local players' cgames load the same cgame.qvm
++	[ VM_CGAME_SPLIT ... VM_CGAME_SPLIT_LAST ] = "cgame"
+ };
+ 
+ static void VM_VmInfo_f( void );
+@@ -1674,7 +1676,7 @@
+ 
+ 	//Com_Printf( S_COLOR_GREEN "VMINFO [%s] crc: %08X, ic: %i, dl: %i\n", vm->name, vm->crc32sum, vm->instructionCount, vm->exactDataLength );
+ 
+-	if ( vm->index == VM_CGAME ) {
++	if ( vm->index == VM_CGAME || ( vm->index >= VM_CGAME_SPLIT && vm->index <= VM_CGAME_SPLIT_LAST ) ) {
+ 		if ( vm->crc32sum == 0x3E93FC1A && vm->instructionCount == 123596 && vm->exactDataLength == 2007536 ) {
+ 			ip = buf + 110190;
+ 			if ( ip->op == OP_ENTER && (ip+183)->op == OP_LEAVE && ip->value == (ip+183)->value ) {
+--- a/code/server/sv_client.c
++++ b/code/server/sv_client.c
+@@ -508,7 +508,8 @@
+ 	}
+ 
+ 	// check for concurrent connections
+-	for ( i = 0, n = 0; i < sv.maxclients; i++ ) {
++	// (PS5: not the local players, each on a loopback channel of their own: split screen)
++	for ( i = 0, n = 0; i < sv.maxclients && !NET_IsLocalAddress( from ); i++ ) {
+ 		const netadr_t *addr = &svs.clients[ i ].netchan.remoteAddress;
+ 		if ( addr->type != NA_BOT && NET_CompareBaseAdr( addr, from ) ) {
+ 			if ( svs.clients[ i ].state >= CS_CONNECTED && !svs.clients[ i ].justConnected ) {
+@@ -727,7 +728,8 @@
+ 	}
+ 
+ 	if ( !newcl ) {
+-		if ( NET_IsLocalAddress( from ) ) {
++		// PS5: player 1 takes a bot's place; a full server turns another local player away
++		if ( NET_LoopChannel( from ) == 0 ) {
+ 			count = 0;
+ 			for ( i = startIndex; i < sv.maxclients; i++ ) {
+ 				cl = &svs.clients[i];
+--- a/code/server/sv_main.c
++++ b/code/server/sv_main.c
+@@ -1161,9 +1161,10 @@
+ 	}
+ 
+ 	// only pause if there is just a single client connected
++	// (PS5: the local players count as one, split screen)
+ 	count = 0;
+ 	for ( i = 0, cl = svs.clients ; i < sv.maxclients; i++, cl++ ) {
+-		if ( cl->state >= CS_CONNECTED && cl->netchan.remoteAddress.type != NA_BOT ) {
++		if ( cl->state >= CS_CONNECTED && cl->netchan.remoteAddress.type != NA_BOT && NET_LoopChannel( &cl->netchan.remoteAddress ) <= 0 ) {
+ 			count++;
+ 		}
+ 	}

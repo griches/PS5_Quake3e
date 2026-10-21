@@ -341,6 +341,13 @@ pad_player(int player, struct pad *pad)
    return true;
 }
 
+int32_t
+pad_player_user(int player)
+{
+   const struct pad_player_state *state = pad_state(player);
+   return state != NULL ? state->user : -1;
+}
+
 int
 pad_player_readings(int player, const struct pad_reading **readings)
 {
