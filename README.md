@@ -21,6 +21,7 @@ or read it in the console's log; nothing else is claimed.
 | Area | Seen on the console | Not yet verified |
 | --- | --- | --- |
 | Start-up and exit | Boots to the menu, loads all nine pak files, quits cleanly to the home screen | |
+| The move to PPSA99319 | 1.4.0's first launch, 2026-10-22: the nine pak files, two other pk3 files and the settings copied from `PPSA99303/baseq3`, each the same size as its original, the old folder left as it was; a game played from them | A console without the old folder (the copy is skipped, as for a new install) |
 | Rendering | Single player plays at 3840x2160 on a 59.94 Hz display | Whether it holds 60 fps everywhere; 120 Hz (the test display stayed at 60) |
 | Video modes | The menu lists 3840x2160, 2560x1440 and 1920x1080; a live switch to 1920x1080 went through | 2560x1440 |
 | Split screen | Two, three and four players, 2026-10-21: each joins and plays; four players and three bots started from the menu; three players' scoreboard quarter, free for all and team deathmatch (players 2 and 3 on the teams chosen for them); the camera with two players, cutting between players and bots; the halves' display in its own shape; bot views, player 1 and three quarters watching Xaero, Hunter and Klesk (q3dm4, from a script); a locked 120 fps at 3840x2160 on a 120 Hz display with one to four players and three bots (q3dm4, q3dm17), never a missed refresh | Players 3 and 4 on their own controllers; team games; how far past 120 it could go; the bot views from the menu, and with View 2 to View 4 off the scoreboard |
@@ -45,38 +46,39 @@ Known limits:
 
 ## Install
 
-> **Read this first: a title ID shared with two PS3 emulators.** PS5SX3 and
-> KB-RPCS3, both ports of the RPCS3 PlayStation 3 emulator, use the same title ID
-> as this port, `PPSA99303`, and so the same folder, `/data/homebrew/PPSA99303`.
-> A console holds one app per title ID: installing Quake replaces the emulator,
-> and removing Quake removes the folder with the emulator's games and saves in it.
-> This has happened to players through a homebrew store. If you have either
-> emulator installed, don't install this port. Install it by hand, as below, so
-> you can see what is in `/data/homebrew/PPSA99303` before you copy anything;
-> with a store, read its warning before installing or removing. Telling apps that
-> share a title ID apart, and never overwriting or deleting another app, is for
-> each store's developers to handle.
+> **A new title ID from 1.4.0: `PPSA99319`.** Up to 1.3.0 this port was
+> `PPSA99303`, the ID two PS3 emulators (PS5SX3 and KB-RPCS3) use too, and so the
+> same folder, `/data/homebrew/PPSA99303`: installing one replaced the other, and
+> removing Quake through a homebrew store removed an emulator's games and saves.
+> 1.4.0 has an ID of its own and installs beside the old one, as a second "Quake
+> III Arena". Its first launch copies your pak files and settings from
+> `/data/homebrew/PPSA99303/baseq3` (only when Quake's `pak0.pk3` is there; it
+> reads that folder and never changes it). Then you can remove the old one, but
+> only if `/data/homebrew/PPSA99303` is Quake's: if you also have one of the
+> emulators, that folder may be the emulator's.
 
 You need a PS5 that already runs homebrew: an enabler such as etaHEN,
 ShadowMountPlus (it shows titles in `/data/homebrew` on the home screen) and an FTP
 server (ftpsrv, port 2121). Setting that up is not covered here.
 
-1. **Get the title.** Download `Quake3-PS5-v1.3.0.zip` from the
+1. **Get the title.** Download `Quake3-PS5-v1.4.0.zip` from the
    [latest release](https://github.com/griches/PS5_Quake3e/releases/latest) and
-   unzip it. It holds one folder, `PPSA99303`.
+   unzip it. It holds one folder, `PPSA99319`.
 2. **Get the game data** (not included, see the table below): `pak0.pk3` from your
    own copy of Quake III Arena, and `pak1.pk3` to `pak8.pk3` from the 1.32 point
    release.
-3. **Put the nine pak files** in `PPSA99303/baseq3/`, beside `zz-ps5-ui.pk3`.
+3. **Put the nine pak files** in `PPSA99319/baseq3/`, beside `zz-ps5-ui.pk3`.
+   Coming from 1.3.0 or earlier with them in `PPSA99303`, skip steps 2 and 3:
+   the first launch copies them.
 4. **Copy the folder to the console** over FTP, so that it becomes
-   `/data/homebrew/PPSA99303/`:
+   `/data/homebrew/PPSA99319/`:
 
    ```text
-   /data/homebrew/PPSA99303/eboot.bin
-   /data/homebrew/PPSA99303/sce_sys/...
-   /data/homebrew/PPSA99303/sce_module/libc.prx
-   /data/homebrew/PPSA99303/baseq3/pak0.pk3 ... pak8.pk3
-   /data/homebrew/PPSA99303/baseq3/zz-ps5-ui.pk3
+   /data/homebrew/PPSA99319/eboot.bin
+   /data/homebrew/PPSA99319/sce_sys/...
+   /data/homebrew/PPSA99319/sce_module/libc.prx
+   /data/homebrew/PPSA99319/baseq3/pak0.pk3 ... pak8.pk3
+   /data/homebrew/PPSA99319/baseq3/zz-ps5-ui.pk3
    ```
 5. **Launch "Quake III Arena"** from the home screen. If the tile does not appear,
    let ShadowMountPlus rescan.
@@ -98,7 +100,7 @@ Not included, and never to be committed here.
 All nine are needed. A `pak1.pk3` to `pak8.pk3` from any version other than 1.32
 is refused at start-up, and so is a copy with only `pak0.pk3`.
 
-Extra start-up commands can go in `/data/homebrew/PPSA99303/cmdline.txt` (one
+Extra start-up commands can go in `/data/homebrew/PPSA99319/cmdline.txt` (one
 line, for example `+connect 192.168.0.10`).
 
 ## Controls
@@ -252,9 +254,9 @@ The stack builds on Linux. On macOS this repository drives a Lima VM:
 
 ```bash
 git submodule update --init   # Quake3e and ioquake3, at their pinned revisions
-ps5/tools/vm.sh build      # the title: dist/PPSA99303/
-ps5/tools/vm.sh build-ui   # the menus: dist/PPSA99303/baseq3/zz-ps5-ui.pk3
-ps5/tools/vm.sh package-release 1.3.0   # dist/Quake3-PS5-v1.3.0.zip, from a clean commit
+ps5/tools/vm.sh build      # the title: dist/PPSA99319/
+ps5/tools/vm.sh build-ui   # the menus: dist/PPSA99319/baseq3/zz-ps5-ui.pk3
+ps5/tools/vm.sh package-release 1.4.0   # dist/Quake3-PS5-v1.4.0.zip, from a clean commit
 ps5/tools/vm.sh deploy     # FTP to the console (needs the stack's control payload)
 ps5/tools/vm.sh run        # launch and follow the console's log
 ```

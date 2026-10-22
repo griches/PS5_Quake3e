@@ -35,6 +35,7 @@ GNU General Public License for more details.
 #include <sys/ioctl.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <dirent.h>
 
 #include <ps5platform/fp.h>
 
@@ -397,6 +398,90 @@ void InitSig( void )
 }
 
 
+/*
+Version 1.4.0 moved the title from PPSA99303, the ID two PS3 emulators (PS5SX3
+and KB-RPCS3) use too, to PPSA99319. The first launch without game data copies
+the player's pak files (baseq3/*.pk3, but the menus' own zz-ps5-ui.pk3) and
+settings (baseq3/q3config.cfg) from the old folder. The old folder is only read,
+never changed, and only when it holds Quake's pak0.pk3. A file goes in under a
+.part name and takes its own when whole, so a copy cut short starts again.
+*/
+#define PS5_OLD_DATA "/data/homebrew/PPSA99303/baseq3"
+#define PS5_DATA "/app0/baseq3"
+
+static qboolean PS5_CopyFile( const char *name )
+{
+	static char buffer[ 4 << 20 ];
+	char from[ MAX_OSPATH ], to[ MAX_OSPATH ], part[ MAX_OSPATH ];
+	FILE *in, *out;
+	size_t got;
+	qboolean ok = qtrue;
+
+	Com_sprintf( from, sizeof( from ), "%s/%s", PS5_OLD_DATA, name );
+	Com_sprintf( to, sizeof( to ), "%s/%s", PS5_DATA, name );
+	Com_sprintf( part, sizeof( part ), "%s.part", to );
+	if ( access( to, F_OK ) == 0 )
+		return qtrue;
+	in = fopen( from, "rb" );
+	if ( !in ) {
+		say( "data: cannot read %s (%s)", from, strerror( errno ) );
+		return qfalse;
+	}
+	out = fopen( part, "wb" );
+	if ( !out ) {
+		say( "data: cannot write %s (%s)", part, strerror( errno ) );
+		fclose( in );
+		return qfalse;
+	}
+	while ( ok && ( got = fread( buffer, 1, sizeof( buffer ), in ) ) > 0 )
+		ok = fwrite( buffer, 1, got, out ) == got;
+	ok = ok && !ferror( in );
+	fchmod( fileno( out ), 0666 );
+	ok = fclose( out ) == 0 && ok;
+	fclose( in );
+	if ( !ok || rename( part, to ) != 0 ) {
+		say( "data: copying %s failed (%s)", name, strerror( errno ) );
+		unlink( part );
+		return qfalse;
+	}
+	return qtrue;
+}
+
+static void PS5_MoveIn( void )
+{
+	struct dirent *entry;
+	const char *name;
+	size_t length;
+	int copied = 0, failed = 0;
+	DIR *dir;
+
+	if ( access( PS5_DATA "/pak0.pk3", F_OK ) == 0 )
+		return;
+	if ( access( PS5_OLD_DATA "/pak0.pk3", R_OK ) != 0 ) {
+		say( "data: no pak0.pk3 here, nor in %s (%s)", PS5_OLD_DATA, strerror( errno ) );
+		return;
+	}
+	dir = opendir( PS5_OLD_DATA );
+	if ( !dir ) {
+		say( "data: cannot list %s (%s)", PS5_OLD_DATA, strerror( errno ) );
+		return;
+	}
+	say( "data: copying the game data and settings from %s", PS5_OLD_DATA );
+	while ( ( entry = readdir( dir ) ) != NULL ) {
+		name = entry->d_name;
+		length = strlen( name );
+		if ( Q_stricmp( name, "q3config.cfg" ) && ( length < 4 || Q_stricmp( name + length - 4, ".pk3" ) || !Q_stricmp( name, "zz-ps5-ui.pk3" ) ) )
+			continue;
+		if ( PS5_CopyFile( name ) )
+			copied++;
+		else
+			failed++;
+	}
+	closedir( dir );
+	say( "data: %d files copied, %d failed", copied, failed );
+}
+
+
 int main( int argc, const char *argv[] )
 {
 	char con_title[ MAX_CVAR_VALUE_STRING ];
@@ -412,6 +497,8 @@ int main( int argc, const char *argv[] )
 	// IEEE floating point, as the engine's other platforms start with (a title
 	// starts with flush-to-zero and denormals-are-zero)
 	ps5_fp_ieee();
+
+	PS5_MoveIn();
 
 	// More start-up commands, one line, from the title folder (put there over FTP):
 	// /data/homebrew/<TITLE_ID>/cmdline.txt, for example "+map q3dm1"
