@@ -98,6 +98,8 @@ void pad_player_vibrate(int player, float large, float small);
 /* The light bar's colour. */
 void pad_light_bar(uint8_t r, uint8_t g, uint8_t b);
 void pad_player_light_bar(int player, uint8_t r, uint8_t g, uint8_t b);
+/* The light bar back to the console's own colour for the player's user. */
+void pad_player_reset_light_bar(int player);
 
 /* A USB or Bluetooth mouse (libSceMouse), the first user's. */
 enum {

@@ -37,6 +37,7 @@ int scePadClose(int32_t handle);
 int scePadSetVibrationMode(int32_t handle, int32_t mode);
 int scePadSetVibration(int32_t handle, const void *vibration);
 int scePadSetLightBar(int32_t handle, const void *color);
+int scePadResetLightBar(int32_t handle);
 int scePadSetMotionSensorState(int32_t handle, bool enable);
 int scePadSetAngularVelocityDeadbandState(int32_t handle, bool enable);
 int sceKernelLoadStartModule(const char *name, size_t argc, const void *argv, uint32_t flags,
@@ -394,6 +395,15 @@ void
 pad_light_bar(uint8_t r, uint8_t g, uint8_t b)
 {
    pad_player_light_bar(0, r, g, b);
+}
+
+void
+pad_player_reset_light_bar(int player)
+{
+   const struct pad_player_state *state = pad_state(player);
+   if (state == NULL)
+      return;
+   (void)scePadResetLightBar(state->handle);
 }
 
 /* --------------------------------------------------------------- the mouse */

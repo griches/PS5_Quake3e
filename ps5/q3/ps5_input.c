@@ -832,6 +832,45 @@ static void IN_PlayerNames( void )
 }
 
 
+/*
+The light bar: a player's own team's colour in a team game, red or blue, as they
+change teams; the console's own colour for their user otherwise (no team, a
+spectator, out of a game). Each player's from their own snapshot, set only when
+it changes or their controller does.
+*/
+static void IN_LightBars( void )
+{
+	static int shown[MAX_LOCAL_PLAYERS] = { -1, -1, -1, -1 };
+	static int32_t shownUser[MAX_LOCAL_PLAYERS] = { -1, -1, -1, -1 };
+	const playerState_t *ps;
+	int player, team;
+
+	for ( player = 0; player < MAX_LOCAL_PLAYERS; player++ ) {
+		const int32_t user = pad_player_user( player );
+		team = TEAM_FREE;
+		if ( user >= 0 && player < CL_SplitViews() && CL_PlayerState( player ) == CA_ACTIVE && !CL_PlayerOnlooker( player ) ) {
+			ps = &cl_localPlayers[ player ].active.snap.ps;
+			if ( cl_localPlayers[ player ].active.snap.valid && !( ps->pm_flags & PMF_FOLLOW ) )
+				team = ps->persistant[ PERS_TEAM ];
+		}
+		if ( team != TEAM_RED && team != TEAM_BLUE )
+			team = TEAM_FREE;
+		if ( user < 0 || ( team == shown[player] && user == shownUser[player] ) )
+			continue;
+		if ( team == TEAM_RED )
+			pad_player_light_bar( player, 255, 0, 0 );
+		else if ( team == TEAM_BLUE )
+			pad_player_light_bar( player, 0, 0, 255 );
+		else
+			pad_player_reset_light_bar( player );
+		shown[player] = team;
+		shownUser[player] = user;
+		Com_Printf( "PS5 pad: player %i's light bar %s\n", player + 1,
+			team == TEAM_RED ? "red" : team == TEAM_BLUE ? "blue" : "the console's own" );
+	}
+}
+
+
 void HandleEvents( void )
 {
 	const double now = now_seconds();
@@ -855,6 +894,7 @@ void HandleEvents( void )
 	}
 	IN_SetPlayer( 0 );
 	IN_PlayerNames();
+	IN_LightBars();
 	if ( IN_PollKeyboard() ) {
 		IN_ReleaseAll();
 		return;
